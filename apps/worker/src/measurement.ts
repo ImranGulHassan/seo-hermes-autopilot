@@ -1,16 +1,21 @@
 import { completedSearchWindow, enrichWithConversions, GoogleOAuthTokenProvider, GoogleSearchConsoleClient, PostHogConversionClient } from "@seo-autopilot/connectors";
-import { runMeasurementSchedule, type ChangeRecord, type MetricBaseline } from "@seo-autopilot/core";
-import { createPool, migrate, PostgresChangeLedger } from "@seo-autopilot/database";
+import { runMeasurementSchedule, workspaceConfigSchema, type ChangeRecord, type MetricBaseline } from "@seo-autopilot/core";
+import { createPool, migrate, PostgresChangeLedger, siteIdForUrl } from "@seo-autopilot/database";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 
 const databaseUrl = process.env.DATABASE_URL;
-const propertyUrl = process.env.GSC_PROPERTY_URL;
+const invocationRoot = resolve(process.env.INIT_CWD ?? process.cwd());
+const workspacePath = resolve(invocationRoot, process.argv[2] ?? ".seo-autopilot/workspace.json");
+const workspace = workspaceConfigSchema.parse(JSON.parse(await readFile(workspacePath, "utf8")));
+const propertyUrl = workspace.gscPropertyUrl ?? process.env.GSC_PROPERTY_URL;
 if (!databaseUrl || !propertyUrl) throw new Error("DATABASE_URL and GSC_PROPERTY_URL are required.");
 const accessToken = await googleAccessToken();
 if (!accessToken) throw new Error("GSC_ACCESS_TOKEN or Google OAuth refresh credentials are required.");
 const pool = createPool({ connectionString: databaseUrl });
 try {
   await migrate(pool);
-  const ledger = new PostgresChangeLedger(pool);
+  const ledger = new PostgresChangeLedger(pool, siteIdForUrl(workspace.siteUrl));
   const gsc = new GoogleSearchConsoleClient({ accessToken });
   const conversionCache = new Map<string, Awaited<ReturnType<PostHogConversionClient["fetchLandingPageConversions"]>>>();
   const result = await runMeasurementSchedule({
@@ -20,12 +25,13 @@ try {
       const window = completedSearchWindow(now);
       let rows = await gsc.fetchPageMetrics(propertyUrl, window);
       const posthog = posthogClient();
-      const eventName = process.env.POSTHOG_CONVERSION_EVENT?.trim();
+      const eventName = workspace.posthog?.eventName ?? process.env.POSTHOG_CONVERSION_EVENT?.trim();
       if (posthog && eventName) {
         const cacheKey = `${window.startDate}:${window.endDate}`;
         let conversions = conversionCache.get(cacheKey);
         if (!conversions) {
-          conversions = await posthog.fetchLandingPageConversions(window, eventName, process.env.POSTHOG_REVENUE_PROPERTY?.trim() || "revenue");
+          const revenueProperty = workspace.posthog?.revenueProperty ?? (process.env.POSTHOG_REVENUE_PROPERTY?.trim() || "revenue");
+          conversions = await posthog.fetchLandingPageConversions(window, eventName, revenueProperty);
           conversionCache.set(cacheKey, conversions);
         }
         rows = enrichWithConversions(rows, conversions);

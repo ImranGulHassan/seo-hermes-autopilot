@@ -90,16 +90,16 @@ async function runWorkspace(config: WorkspaceConfig): Promise<ScanArtifact> {
   let queryMetrics: NonNullable<ScanArtifact["queryMetrics"]> = [];
   const metricWindow = completedSearchWindow();
   if (config.gscPropertyUrl) {
-    const accessToken = await googleAccessToken();
-    if (!accessToken) {
-      errors.push({ source: "gsc", message: "GSC_ACCESS_TOKEN is not set; completed a technical-only run." });
-    } else {
-      try {
+    try {
+      const accessToken = await googleAccessToken();
+      if (!accessToken) {
+        errors.push({ source: "gsc", message: "GSC_ACCESS_TOKEN is not set; completed a technical-only run." });
+      } else {
         const gsc = new GoogleSearchConsoleClient({ accessToken });
         [metrics, queryMetrics] = await Promise.all([gsc.fetchPageMetrics(config.gscPropertyUrl, metricWindow), gsc.fetchQueryMetrics(config.gscPropertyUrl, metricWindow)]);
-      } catch (error) {
-        errors.push({ source: "gsc", message: error instanceof Error ? error.message : String(error) });
       }
+    } catch (error) {
+      errors.push({ source: "gsc", message: error instanceof Error ? error.message : String(error) });
     }
   }
   let analyticsState: ScanArtifact["analyticsState"] = config.posthog ? "unavailable" : "not-configured";

@@ -1,20 +1,24 @@
 import { mkdir, open, readFile, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { spawn } from "node:child_process";
+import { resolveWorkspacePaths } from "./workspaces.js";
 
 const projectRoot = resolve(process.env.INIT_CWD ?? process.cwd());
 const stateDirectory = resolve(projectRoot, ".seo-autopilot");
 const lockPath = resolve(stateDirectory, "pilot.lock");
+const workspaces = resolveWorkspacePaths(process.argv.slice(2), process.env.SEO_AUTOPILOT_WORKSPACES, projectRoot);
 
 await mkdir(stateDirectory, { recursive: true });
 await acquireLock(lockPath);
 try {
   const startedAt = new Date().toISOString();
   const steps = [
-    { name: "workspace-scan", args: ["scan", "workspace"] },
-    { name: "draft-pr-orchestration", args: ["scan", "orchestrate", "--live"] },
+    ...workspaces.flatMap((workspace, index) => [
+      { name: `workspace-${index + 1}-scan`, args: ["scan", "workspace", workspace] },
+      { name: `workspace-${index + 1}-draft-pr-orchestration`, args: ["scan", "orchestrate", workspace, "--live"] }
+    ]),
     { name: "github-reconciliation", args: ["reconcile"] },
-    { name: "measurement", args: ["measurement"] }
+    ...workspaces.map((workspace, index) => ({ name: `workspace-${index + 1}-measurement`, args: ["measurement", workspace] }))
   ];
   const completed: string[] = [];
   for (const step of steps) {
@@ -23,7 +27,7 @@ try {
     completed.push(step.name);
     console.log(JSON.stringify({ event: "pilot-step-completed", step: step.name, at: new Date().toISOString() }));
   }
-  console.log(JSON.stringify({ event: "pilot-run-completed", startedAt, completedAt: new Date().toISOString(), steps: completed }));
+  console.log(JSON.stringify({ event: "pilot-run-completed", startedAt, completedAt: new Date().toISOString(), workspaces, steps: completed }));
 } finally {
   await rm(lockPath, { force: true });
 }

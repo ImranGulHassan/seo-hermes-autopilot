@@ -9,6 +9,7 @@ export interface Queryable {
 }
 
 export function createPool(config: PoolConfig = {}): Pool { return new Pool(config); }
+export function siteIdForUrl(siteUrl: string): string { return `site_${Buffer.from(siteUrl).toString("base64url").slice(0, 32)}`; }
 
 export async function migrate(database: Queryable): Promise<void> {
   const sql = await readFile(fileURLToPath(new URL("../migrations/001_initial.sql", import.meta.url)), "utf8");
@@ -16,11 +17,16 @@ export async function migrate(database: Queryable): Promise<void> {
 }
 
 export class PostgresChangeLedger implements ChangeLedger {
-  constructor(private readonly database: Queryable) {}
+  constructor(private readonly database: Queryable, private readonly siteId?: string) {}
 
   async findByFingerprint(fingerprint: string) { return this.one("SELECT payload FROM changes WHERE fingerprint = $1 ORDER BY updated_at DESC LIMIT 1", [fingerprint]); }
   async get(id: string) { return this.one("SELECT payload FROM changes WHERE id = $1", [id]); }
-  async list() { return (await this.database.query<{ payload: ChangeRecord }>("SELECT payload FROM changes ORDER BY updated_at DESC")).rows.map((row) => row.payload); }
+  async list() {
+    const result = this.siteId
+      ? await this.database.query<{ payload: ChangeRecord }>("SELECT c.payload FROM changes c JOIN opportunities o ON o.id=c.opportunity_id WHERE o.site_id=$1 ORDER BY c.updated_at DESC", [this.siteId])
+      : await this.database.query<{ payload: ChangeRecord }>("SELECT payload FROM changes ORDER BY updated_at DESC");
+    return result.rows.map((row) => row.payload);
+  }
   async findByExternalPullRequest(owner: string, repository: string, number: number) {
     return this.one("SELECT payload FROM changes WHERE github_owner = $1 AND github_repository = $2 AND github_pr_number = $3", [owner, repository, number]);
   }
@@ -48,7 +54,7 @@ export class PostgresWebhookDeliveryStore implements WebhookDeliveryStore {
 export class PostgresRunStore {
   constructor(private readonly database: Queryable) {}
   async save(artifact: ScanArtifact): Promise<void> {
-    const siteId = `site_${Buffer.from(artifact.siteUrl).toString("base64url").slice(0, 32)}`;
+    const siteId = siteIdForUrl(artifact.siteUrl);
     await this.database.query("INSERT INTO sites(id,url) VALUES($1,$2) ON CONFLICT(url) DO NOTHING", [siteId, artifact.siteUrl]);
     await this.database.query(
       `INSERT INTO runs(id,site_id,started_at,completed_at,data_state,artifact) VALUES($1,(SELECT id FROM sites WHERE url=$2),$3,$4,$5,$6::jsonb)
