@@ -62,9 +62,23 @@ export class PostgresRunStore {
       : await this.database.query<{ payload: Opportunity }>("SELECT payload FROM opportunities ORDER BY estimated_value DESC");
     return result.rows.map((row) => row.payload);
   }
-  async listRecent(limit = 30): Promise<ScanArtifact[]> {
+  async listSites(): Promise<Array<{ id: string; url: string; lastRunAt: string | null }>> {
+    return (await this.database.query<{ id: string; url: string; last_run_at: Date | string | null }>(
+      "SELECT s.id,s.url,max(r.completed_at) AS last_run_at FROM sites s LEFT JOIN runs r ON r.site_id=s.id GROUP BY s.id,s.url ORDER BY last_run_at DESC NULLS LAST,s.url"
+    )).rows.map((row) => ({ id: row.id, url: row.url, lastRunAt: row.last_run_at ? new Date(row.last_run_at).toISOString() : null }));
+  }
+  async listRecent(limit = 30, siteId?: string): Promise<ScanArtifact[]> {
     const safeLimit = Math.max(1, Math.min(Math.trunc(limit), 100));
-    return (await this.database.query<{ artifact: ScanArtifact }>("SELECT artifact FROM runs ORDER BY completed_at DESC LIMIT $1", [safeLimit])).rows.map((row) => row.artifact);
+    const result = siteId
+      ? await this.database.query<{ artifact: ScanArtifact }>("SELECT artifact FROM runs WHERE site_id=$1 ORDER BY completed_at DESC LIMIT $2", [siteId, safeLimit])
+      : await this.database.query<{ artifact: ScanArtifact }>("SELECT artifact FROM runs ORDER BY completed_at DESC LIMIT $1", [safeLimit]);
+    return result.rows.map((row) => row.artifact);
+  }
+  async listChanges(siteId?: string): Promise<ChangeRecord[]> {
+    const result = siteId
+      ? await this.database.query<{ payload: ChangeRecord }>("SELECT c.payload FROM changes c JOIN opportunities o ON o.id=c.opportunity_id WHERE o.site_id=$1 ORDER BY c.updated_at DESC", [siteId])
+      : await this.database.query<{ payload: ChangeRecord }>("SELECT payload FROM changes ORDER BY updated_at DESC");
+    return result.rows.map((row) => row.payload);
   }
   private async saveOpportunity(siteId: string, opportunity: Opportunity) {
     await this.database.query(

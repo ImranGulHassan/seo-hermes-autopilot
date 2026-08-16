@@ -6,14 +6,16 @@ import type { PostHog } from "posthog-node";
 
 const artifactEnvelopeSchema = z.object({
   schemaVersion: z.literal(1), runId: z.string().startsWith("run_"), startedAt: z.string().datetime(), completedAt: z.string().datetime(),
-  siteUrl: z.string().url(), dataState: z.enum(["technical-only", "search-performance"]), pages: z.array(z.unknown()), metrics: z.array(z.unknown()), queryMetrics: z.array(z.unknown()).optional(), errors: z.array(z.unknown()), opportunities: z.array(z.unknown())
+  siteUrl: z.string().url(), dataState: z.enum(["technical-only", "search-performance", "analytics-enriched"]), pages: z.array(z.unknown()), metrics: z.array(z.unknown()), queryMetrics: z.array(z.unknown()).optional(), errors: z.array(z.unknown()), opportunities: z.array(z.unknown())
 });
 
 export interface ApiStores {
   changes: ChangeLedger;
   deliveries: WebhookDeliveryStore;
+  listSites(): Promise<Array<{ id: string; url: string; lastRunAt: string | null }>>;
+  listChanges(siteId?: string): Promise<Awaited<ReturnType<ChangeLedger["list"]>>>;
   listOpportunities(siteId?: string): Promise<Opportunity[]>;
-  listRecentRuns(limit?: number): Promise<ScanArtifact[]>;
+  listRecentRuns(limit?: number, siteId?: string): Promise<ScanArtifact[]>;
   saveRun(artifact: ScanArtifact): Promise<void>;
 }
 
@@ -26,11 +28,16 @@ export function createApp(options: { stores: ApiStores; apiSecret: string; githu
     await next();
   });
   app.get("/v1/opportunities", async (context) => context.json({ opportunities: await options.stores.listOpportunities(context.req.query("siteId")) }));
-  app.get("/v1/changes", async (context) => context.json({ changes: await options.stores.changes.list() }));
-  app.get("/v1/pilot-scorecard", async (context) => context.json({ scorecard: calculatePilotScorecard(await options.stores.changes.list()) }));
+  app.get("/v1/sites", async (context) => context.json({ sites: await options.stores.listSites() }));
+  app.get("/v1/changes", async (context) => context.json({ changes: await options.stores.listChanges(context.req.query("siteId")) }));
+  app.get("/v1/pilot-scorecard", async (context) => context.json({ scorecard: calculatePilotScorecard(await options.stores.listChanges(context.req.query("siteId"))) }));
   app.get("/v1/dashboard", async (context) => {
-    const [runs, changes] = await Promise.all([options.stores.listRecentRuns(30), options.stores.changes.list()]);
-    return context.json(buildDashboard(runs, changes));
+    const sites = await options.stores.listSites();
+    const requestedSiteId = context.req.query("siteId");
+    if (requestedSiteId && !sites.some((site) => site.id === requestedSiteId)) return context.json({ error: "site_not_found" }, 404);
+    const siteId = requestedSiteId ?? sites[0]?.id;
+    const [runs, changes] = await Promise.all([options.stores.listRecentRuns(30, siteId), options.stores.listChanges(siteId)]);
+    return context.json({ ...buildDashboard(runs, changes), siteId: siteId ?? null, sites });
   });
   app.get("/v1/changes/:id", async (context) => {
     const change = await options.stores.changes.get(context.req.param("id"));
