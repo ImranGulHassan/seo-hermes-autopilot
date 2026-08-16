@@ -19,6 +19,7 @@ export interface FilePatch {
 
 export interface RepositoryAdapterOptions {
   rootDir: string;
+  frameworkRoot?: string;
   baseUrl: string;
   contentRoots?: string[];
   protectedPaths?: string[];

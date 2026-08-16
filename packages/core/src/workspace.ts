@@ -15,6 +15,7 @@ export const workspaceConfigSchema = z.object({
   }).default({ maxPages: 500, concurrency: 4 }),
   repository: z.object({
     rootDir: z.string().min(1),
+    frameworkRoot: z.string().min(1).default("."),
     contentRoots: z.array(z.string()).default(["content"]),
     validators: z.array(z.object({
       name: z.string().min(1),

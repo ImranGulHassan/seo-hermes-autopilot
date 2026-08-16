@@ -29,6 +29,17 @@ test("discovers static App Router and MDX routes but skips unsupported dynamic r
   assert.equal(pages.some((page) => page.route.includes("slug")), false);
 });
 
+test("discovers a monorepo Next.js app while retaining repository-relative paths", async (context) => {
+  const root = await mkdtemp(resolve(tmpdir(), "seo-adapter-monorepo-test-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(resolve(root, "apps/web/app/about"), { recursive: true });
+  await writeFile(resolve(root, "apps/web/app/about/page.tsx"), "export default function Page() { return <main>About</main>; }\n");
+  const pages = await discoverSourcePages({ rootDir: root, frameworkRoot: "apps/web", baseUrl: "https://example.com", contentRoots: [] });
+  assert.equal(pages[0]?.route, "/about");
+  assert.equal(pages[0]?.filePath, "apps/web/app/about/page.tsx");
+  await assert.rejects(() => discoverSourcePages({ rootDir: root, frameworkRoot: "../outside", baseUrl: "https://example.com" }), /inside the repository/);
+});
+
 test("excludes protected routes from repository discovery", async (context) => {
   const root = await fixture();
   context.after(() => rm(root, { recursive: true, force: true }));

@@ -73,7 +73,7 @@ async function runWorkspace(config: WorkspaceConfig): Promise<ScanArtifact> {
   let sources: SourcePage[] = [];
   if (config.repository) {
     try {
-      sources = await discoverSourcePages({ rootDir: config.repository.rootDir, baseUrl: config.siteUrl, contentRoots: config.repository.contentRoots, protectedPaths: config.protectedPaths });
+      sources = await discoverSourcePages({ rootDir: config.repository.rootDir, frameworkRoot: config.repository.frameworkRoot, baseUrl: config.siteUrl, contentRoots: config.repository.contentRoots, protectedPaths: config.protectedPaths });
     } catch (error) {
       repositoryErrors.push({ source: "repository", message: error instanceof Error ? error.message : String(error) });
     }

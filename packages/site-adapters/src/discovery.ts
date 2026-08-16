@@ -6,7 +6,9 @@ const ignoredDirectories = new Set([".git", ".next", "node_modules", "dist", "co
 
 export async function discoverSourcePages(options: RepositoryAdapterOptions): Promise<SourcePage[]> {
   const root = resolve(options.rootDir);
-  const appRoots = [resolve(root, "app"), resolve(root, "src/app")];
+  const frameworkRoot = resolve(root, options.frameworkRoot ?? ".");
+  if (relative(root, frameworkRoot).startsWith("..")) throw new Error("Framework root must remain inside the repository.");
+  const appRoots = [resolve(frameworkRoot, "app"), resolve(frameworkRoot, "src/app")];
   const contentRoots = (options.contentRoots ?? ["content"]).map((path) => resolve(root, path));
   const pages: SourcePage[] = [];
   for (const appRoot of appRoots) {
