@@ -1,6 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { GitHubAppAuthenticator, GitHubAppClient, GoogleOAuthTokenProvider, GoogleSearchConsoleClient, completedSearchWindow } from "@seo-autopilot/connectors";
+import { GitHubAppAuthenticator, GitHubAppClient, GoogleOAuthTokenProvider, GoogleSearchConsoleClient, PostHogConversionClient, completedSearchWindow, enrichWithConversions } from "@seo-autopilot/connectors";
 import { ChangeWorkflow, InMemoryChangeLedger, createPullRequestProposal, crawlSite, normalizeUrl, pageSnapshotSchema, runDetectors, searchMetricSchema, stableId, workspaceConfigSchema, type ChangeLedger, type MetricBaseline, type Opportunity, type ScanArtifact, type WorkspaceConfig } from "@seo-autopilot/core";
 import { PostgresChangeLedger, PostgresRunStore, createPool, migrate } from "@seo-autopilot/database";
 import { discoverSourcePages, inspectGitFileStates, planRepositoryLinkPatches, validatePatchPlan, type SourcePage } from "@seo-autopilot/site-adapters";
@@ -102,6 +102,24 @@ async function runWorkspace(config: WorkspaceConfig): Promise<ScanArtifact> {
       }
     }
   }
+  let analyticsState: ScanArtifact["analyticsState"] = config.posthog ? "unavailable" : "not-configured";
+  if (config.posthog && metrics.length > 0) {
+    const personalApiKey = process.env.POSTHOG_PERSONAL_API_KEY?.trim();
+    const projectId = process.env.POSTHOG_PROJECT_ID?.trim();
+    if (!personalApiKey || !projectId) {
+      errors.push({ source: "posthog", message: "POSTHOG_PERSONAL_API_KEY or POSTHOG_PROJECT_ID is not set; retained search-only metrics." });
+    } else {
+      try {
+        const host = process.env.POSTHOG_API_HOST?.trim();
+        const posthog = new PostHogConversionClient({ personalApiKey, projectId, ...(host ? { host } : {}) });
+        const conversions = await posthog.fetchLandingPageConversions(metricWindow, config.posthog.eventName, config.posthog.revenueProperty);
+        metrics = enrichWithConversions(metrics, conversions);
+        analyticsState = "enriched";
+      } catch (error) {
+        errors.push({ source: "posthog", message: error instanceof Error ? error.message : String(error) });
+      }
+    }
+  }
   const completedAt = new Date();
   return {
     schemaVersion: 1,
@@ -109,7 +127,8 @@ async function runWorkspace(config: WorkspaceConfig): Promise<ScanArtifact> {
     startedAt: startedAt.toISOString(),
     completedAt: completedAt.toISOString(),
     siteUrl: config.siteUrl,
-    dataState: metrics.length > 0 ? "search-performance" : "technical-only",
+    dataState: metrics.length > 0 ? (analyticsState === "enriched" ? "analytics-enriched" : "search-performance") : "technical-only",
+    analyticsState,
     ...(metrics.length > 0 ? { metricWindow } : {}),
     pages: crawl.pages,
     metrics,

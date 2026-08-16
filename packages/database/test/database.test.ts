@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { PostgresChangeLedger, PostgresWebhookDeliveryStore, type Queryable } from "../src/index.js";
+import { migrate, PostgresChangeLedger, PostgresWebhookDeliveryStore, type Queryable } from "../src/index.js";
 import type { ChangeRecord } from "@seo-autopilot/core";
 
 test("change ledger persists provider identifiers and serialized immutable baseline", async () => {
@@ -23,4 +23,12 @@ test("webhook delivery writes are conflict-safe", async () => {
   const database: Queryable = { query: async (text) => { sql = text; return { rows: [], rowCount: 1, command: "", oid: 0, fields: [] }; } };
   await new PostgresWebhookDeliveryStore(database).add("delivery");
   assert.match(sql, /ON CONFLICT DO NOTHING/);
+});
+
+test("migration permits analytics-enriched scan artifacts", async () => {
+  let sql = "";
+  const database: Queryable = { query: async (text) => { sql = text; return { rows: [], rowCount: 0, command: "", oid: 0, fields: [] }; } };
+  await migrate(database);
+  assert.match(sql, /'analytics-enriched'/);
+  assert.match(sql, /DROP CONSTRAINT IF EXISTS runs_data_state_check/);
 });

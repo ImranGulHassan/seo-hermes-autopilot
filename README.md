@@ -67,6 +67,10 @@ property identifier when performance analysis is wanted:
   "version": 1,
   "siteUrl": "https://www.example.com",
   "gscPropertyUrl": "sc-domain:example.com",
+  "posthog": {
+    "eventName": "purchase",
+    "revenueProperty": "revenue"
+  },
   "protectedPaths": ["legal/**", "pricing", "checkout/**", "auth/**"],
   "crawl": { "maxPages": 500, "concurrency": 4 },
   "repository": {
@@ -110,6 +114,11 @@ atomically. Search Console requests use finalized page-level data from the last
 completed 28-day window, excluding the trailing three days. If credentials are
 missing or rejected, the run completes non-destructively as `technical-only`
 and records the GSC error in its artifact.
+
+When `posthog` is configured, set `POSTHOG_PERSONAL_API_KEY`,
+`POSTHOG_PROJECT_ID`, and `POSTHOG_API_HOST`. Workspace scans join conversion
+events to GSC landing pages after removing query strings and normalizing trailing
+slashes. A PostHog failure is recorded without discarding search metrics.
 
 The crawler reads sitemap declarations from `robots.txt`, falls back to
 `/sitemap.xml`, follows bounded same-origin sitemap indexes, and adds orphaned

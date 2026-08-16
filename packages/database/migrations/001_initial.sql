@@ -13,6 +13,10 @@ CREATE TABLE IF NOT EXISTS runs (
   artifact jsonb NOT NULL
 );
 
+ALTER TABLE runs DROP CONSTRAINT IF EXISTS runs_data_state_check;
+ALTER TABLE runs ADD CONSTRAINT runs_data_state_check
+  CHECK (data_state IN ('technical-only', 'search-performance', 'analytics-enriched'));
+
 CREATE TABLE IF NOT EXISTS opportunities (
   id text PRIMARY KEY,
   site_id text NOT NULL REFERENCES sites(id) ON DELETE CASCADE,

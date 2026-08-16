@@ -49,6 +49,10 @@ Acceptance: duplicate runs cannot create duplicate PRs; revoked permissions and 
 
 Acceptance: every merged change retains its immutable baseline and deployment history; evaluation cannot start before recrawl; outcome language remains explicitly observational.
 
+Operational note: PostHog enrichment is wired into workspace scans and scheduled
+measurement. Activation remains site-specific because a real conversion event
+and revenue property must be selected from the customer's analytics taxonomy.
+
 ## Milestone 6 — Safe end-to-end orchestration (complete)
 
 - Refresh Google access tokens from the configured long-lived OAuth refresh token.

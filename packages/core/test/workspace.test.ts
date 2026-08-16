@@ -17,3 +17,8 @@ test("workspace records reviewed destination mappings with approval evidence", (
 test("workspace rejects destination mappings without reviewer evidence", () => {
   assert.throws(() => workspaceConfigSchema.parse({ version: 1, siteUrl: "https://example.com", orchestration: { destinationMappings: [{ from: "/missing", to: "/live" }] } }));
 });
+
+test("workspace records PostHog conversion semantics without credentials", () => {
+  const config = workspaceConfigSchema.parse({ version: 1, siteUrl: "https://example.com", posthog: { eventName: "resume_downloaded" } });
+  assert.deepEqual(config.posthog, { eventName: "resume_downloaded", revenueProperty: "revenue" });
+});
