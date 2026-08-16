@@ -79,6 +79,17 @@ recrawl-gated measurement. An atomic `.seo-autopilot/pilot.lock` prevents
 overlapping manual and scheduled runs. A failed step stops the sequence, exits
 non-zero, removes the lock, and leaves its structured progress in the journal.
 
+Pass workspace files as arguments to process several sites sequentially, or set
+a comma-separated `SEO_AUTOPILOT_WORKSPACES` value for the unattended timer:
+
+```bash
+pnpm pilot -- .seo-autopilot/sites/one.json .seo-autopilot/sites/two.json
+```
+
+Each site is scanned and orchestrated independently, GitHub is reconciled once,
+and measurement uses a site-scoped ledger so one site's changes cannot be
+evaluated against another site's Search Console property.
+
 The initial host runs this command daily through
 `seo-autopilot-pilot.timer`. Inspect it with
 `systemctl --user status seo-autopilot-pilot.timer` and read failures with

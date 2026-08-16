@@ -18,6 +18,14 @@ test("change ledger persists provider identifiers and serialized immutable basel
   assert.equal(JSON.parse(String(calls[0]?.values?.[8])).baseline.impressions, 1000);
 });
 
+test("site-scoped change ledger cannot list another site's records", async () => {
+  const calls: Array<{ sql: string; values?: unknown[] }> = [];
+  const database: Queryable = { query: async (sql, values) => { calls.push({ sql, ...(values ? { values } : {}) }); return { rows: [], rowCount: 0, command: "", oid: 0, fields: [] }; } };
+  await new PostgresChangeLedger(database, "site_one").list();
+  assert.match(calls[0]!.sql, /WHERE o\.site_id=\$1/);
+  assert.deepEqual(calls[0]!.values, ["site_one"]);
+});
+
 test("run and change reads are scoped by site when requested", async () => {
   const calls: Array<{ sql: string; values?: unknown[] }> = [];
   const database: Queryable = { query: async (sql, values) => { calls.push({ sql, ...(values ? { values } : {}) }); return { rows: [], rowCount: 0, command: "", oid: 0, fields: [] }; } };
