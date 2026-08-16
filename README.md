@@ -75,6 +75,7 @@ property identifier when performance analysis is wanted:
   "crawl": { "maxPages": 500, "concurrency": 4 },
   "repository": {
     "rootDir": "/absolute/path/to/nextjs-site",
+    "frameworkRoot": ".",
     "contentRoots": ["content"],
     "validators": [
       { "name": "typecheck", "command": "pnpm", "args": ["typecheck"] },
