@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { migrate, PostgresChangeLedger, PostgresWebhookDeliveryStore, type Queryable } from "../src/index.js";
+import { migrate, PostgresChangeLedger, PostgresRunStore, PostgresWebhookDeliveryStore, type Queryable } from "../src/index.js";
 import type { ChangeRecord } from "@seo-autopilot/core";
 
 test("change ledger persists provider identifiers and serialized immutable baseline", async () => {
@@ -16,6 +16,18 @@ test("change ledger persists provider identifiers and serialized immutable basel
   await ledger.save(record);
   assert.equal(calls[0]?.values?.[4], "acme");
   assert.equal(JSON.parse(String(calls[0]?.values?.[8])).baseline.impressions, 1000);
+});
+
+test("run and change reads are scoped by site when requested", async () => {
+  const calls: Array<{ sql: string; values?: unknown[] }> = [];
+  const database: Queryable = { query: async (sql, values) => { calls.push({ sql, ...(values ? { values } : {}) }); return { rows: [], rowCount: 0, command: "", oid: 0, fields: [] }; } };
+  const store = new PostgresRunStore(database);
+  await store.listRecent(30, "site_two");
+  await store.listChanges("site_two");
+  assert.match(calls[0]!.sql, /WHERE site_id=\$1/);
+  assert.deepEqual(calls[0]!.values, ["site_two", 30]);
+  assert.match(calls[1]!.sql, /WHERE o\.site_id=\$1/);
+  assert.deepEqual(calls[1]!.values, ["site_two"]);
 });
 
 test("webhook delivery writes are conflict-safe", async () => {
