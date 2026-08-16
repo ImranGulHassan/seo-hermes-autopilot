@@ -1,4 +1,4 @@
-import type { SearchMetric } from "@seo-autopilot/core";
+import { normalizeUrl, type SearchMetric } from "@seo-autopilot/core";
 import { z } from "zod";
 
 const queryResponseSchema = z.object({ results: z.array(z.tuple([z.string(), z.coerce.number(), z.coerce.number()])) });
@@ -35,8 +35,20 @@ export class PostHogConversionClient {
 }
 
 export function enrichWithConversions(metrics: SearchMetric[], conversions: Map<string, { conversions: number; conversionValue: number }>): SearchMetric[] {
+  const normalized = new Map<string, { conversions: number; conversionValue: number }>();
+  for (const [rawUrl, value] of conversions) {
+    try {
+      const url = new URL(rawUrl);
+      url.search = "";
+      const key = normalizeUrl(url.toString());
+      const prior = normalized.get(key) ?? { conversions: 0, conversionValue: 0 };
+      normalized.set(key, { conversions: prior.conversions + value.conversions, conversionValue: prior.conversionValue + value.conversionValue });
+    } catch { /* Ignore malformed analytics URLs instead of failing the scan. */ }
+  }
   return metrics.map((metric) => {
-    const value = conversions.get(metric.url);
+    const url = new URL(metric.url);
+    url.search = "";
+    const value = normalized.get(normalizeUrl(url.toString()));
     return value ? { ...metric, ...value } : metric;
   });
 }

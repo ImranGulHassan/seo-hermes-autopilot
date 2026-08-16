@@ -105,7 +105,7 @@ function buildDashboard(runs: ScanArtifact[], changes: Awaited<ReturnType<Change
     generatedAt: new Date().toISOString(),
     siteUrl: latest?.siteUrl ?? null,
     window: latest?.metricWindow ?? null,
-    search: { impressions, clicks, ctr: impressions ? clicks / impressions : 0, position: weightedPosition, conversions: metrics.reduce((sum, row) => sum + row.conversions, 0), queryCount: queries.length, pageCount: metrics.length },
+    search: { impressions, clicks, ctr: impressions ? clicks / impressions : 0, position: weightedPosition, conversions: metrics.reduce((sum, row) => sum + row.conversions, 0), conversionValue: metrics.reduce((sum, row) => sum + row.conversionValue, 0), analyticsState: latest?.analyticsState ?? "not-configured", queryCount: queries.length, pageCount: metrics.length },
     health: { crawled: pages.length, live: pages.filter((page) => page.status >= 200 && page.status < 300).length, redirects: pages.filter((page) => page.status >= 300 && page.status < 400).length, broken: pages.filter((page) => page.status >= 400).length, indexable: pages.filter((page) => page.indexable).length, sitemapListed: pages.filter((page) => page.sitemapListed).length, errors: latest?.errors.length ?? 0 },
     opportunities: { total: opportunities.length, byType, items: opportunities.slice(0, 8) },
     topQueries: queries.slice(0, 12),

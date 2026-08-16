@@ -110,3 +110,9 @@ network request.
 
 PostHog enrichment is optional. Search-only prioritization and evaluation remain
 available when analytics credentials are missing.
+
+Set the conversion semantics in `workspace.json` under `posthog.eventName` and
+`posthog.revenueProperty`. Scheduled measurement uses the equivalent
+`POSTHOG_CONVERSION_EVENT` and `POSTHOG_REVENUE_PROPERTY` variables. Current URL
+query parameters are removed before matching, and multiple URL variants are
+aggregated into one landing-page metric.

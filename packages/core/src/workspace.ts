@@ -4,6 +4,10 @@ export const workspaceConfigSchema = z.object({
   version: z.literal(1),
   siteUrl: z.string().url(),
   gscPropertyUrl: z.string().min(1).optional(),
+  posthog: z.object({
+    eventName: z.string().min(1),
+    revenueProperty: z.string().min(1).default("revenue")
+  }).optional(),
   protectedPaths: z.array(z.string()).default(["legal/**", "pricing", "checkout/**", "auth/**"]),
   crawl: z.object({
     maxPages: z.number().int().positive().max(10_000).default(500),
@@ -43,12 +47,13 @@ export interface ScanArtifact {
   startedAt: string;
   completedAt: string;
   siteUrl: string;
-  dataState: "technical-only" | "search-performance";
+  dataState: "technical-only" | "search-performance" | "analytics-enriched";
+  analyticsState?: "not-configured" | "enriched" | "unavailable";
   metricWindow?: { startDate: string; endDate: string };
   pages: import("./types.js").PageSnapshot[];
   metrics: import("./types.js").SearchMetric[];
   queryMetrics?: import("./types.js").SearchQueryMetric[];
   sitemapUrls?: string[];
-  errors: Array<{ source: "crawler" | "gsc" | "repository"; message: string; url?: string }>;
+  errors: Array<{ source: "crawler" | "gsc" | "posthog" | "repository"; message: string; url?: string }>;
   opportunities: import("./types.js").Opportunity[];
 }
