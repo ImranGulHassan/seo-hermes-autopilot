@@ -160,6 +160,21 @@ Acceptance: zero-volume rates are not shown as misleading percentages, pilot
 gates use the documented 40% acceptance and 5% rollback thresholds, and every
 displayed implementation metric derives from persisted change records.
 
+## Milestone 15 — Reviewed static metadata repairs (complete)
+
+- Record exact replacement metadata with reviewer identity, approval time, and
+  an optional rationale.
+- Require replacements to address every detected metadata field, remain
+  same-origin, and stay unique across the current indexable crawl.
+- Map only supported static Next.js/MDX routes and retain dynamic or protected
+  pages as proposal-only findings.
+- Apply tracked-clean, protected-path, isolated validation, idempotency, and
+  draft-only GitHub controls to metadata patches exactly as for link repairs.
+
+Acceptance: unreviewed copy cannot become code, stale or duplicate metadata is
+rejected before validation, dry runs leave the repository unchanged, and live
+runs can open only validator-gated draft PRs for approved static pages.
+
 ## Pilot and expansion gates
 
 - Manually support three established Next.js sites before unattended scheduling.
