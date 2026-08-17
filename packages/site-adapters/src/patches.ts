@@ -106,7 +106,11 @@ function updateNextMetadata(source: string, metadata: { title?: string; descript
     if (!value) continue;
     const property = new RegExp(`((?:^|[,\\n])\\s*${key}\\s*:\\s*)(["'\\x60])([\\s\\S]*?)\\2`);
     if (property.test(contents)) contents = contents.replace(property, `$1${JSON.stringify(value)}`);
-    else contents = `${contents.trimEnd()}\n  ${key}: ${JSON.stringify(value)},\n`;
+    else {
+      const existing = contents.trimEnd();
+      const separator = existing.trim() && !existing.trim().endsWith(",") ? "," : "";
+      contents = `${existing}${separator}\n  ${key}: ${JSON.stringify(value)},\n`;
+    }
   }
   return source.replace(blockExpression, (whole) => whole.replace(block[1] ?? "", contents));
 }

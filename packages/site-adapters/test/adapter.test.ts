@@ -68,6 +68,19 @@ test("plans stable metadata and redirect-link patches without touching the repos
   assert.match(redirectPatch?.after ?? "", /\]\(\/new\)/);
 });
 
+test("adds metadata to a single-line object with no trailing comma", async (context) => {
+  const root = await fixture();
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const about = (await discoverSourcePages({ rootDir: root, baseUrl: "https://example.com" })).find((page) => page.route === "/about")!;
+  await writeFile(resolve(root, about.filePath), 'export const metadata = { title: "About the Example Team" };\nexport default function Page() { return <main>About</main>; }\n');
+
+  const patch = await planMetadataPatch(root, about, {
+    description: "Learn about the Example team, its product principles, and the information on this page."
+  });
+
+  assert.match(patch?.after ?? "", /title: "About the Example Team",\n  description:/);
+});
+
 test("applies only after validators pass", async (context) => {
   const root = await fixture();
   context.after(() => rm(root, { recursive: true, force: true }));
