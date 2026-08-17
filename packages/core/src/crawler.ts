@@ -5,6 +5,8 @@ import { normalizeUrl } from "./util.js";
 export interface CrawlOptions {
   maxPages?: number;
   concurrency?: number;
+  maxTransientRetries?: number;
+  retryDelayMs?: number;
   userAgent?: string;
   sitemapUrls?: string[];
   seedUrls?: string[];
@@ -34,9 +36,24 @@ export async function crawlSite(startUrl: string, options: CrawlOptions = {}): P
   const redirectsByUrl = new Map<string, string>();
   const sitemapUrls = new Set((options.sitemapUrls ?? []).map(normalizeUrl));
 
+  async function fetchPage(url: string): Promise<Response> {
+    const maxRetries = Math.max(0, options.maxTransientRetries ?? 2);
+    for (let attempt = 0; ; attempt += 1) {
+      const response = await fetcher(url, {
+        redirect: "manual",
+        headers: { "user-agent": options.userAgent ?? "SEO-Autopilot/0.1 (+site-owner-crawler)" },
+      });
+      const transient = response.status === 429 || response.status >= 500;
+      if (!transient || attempt >= maxRetries) return response;
+      await response.body?.cancel();
+      const delayMs = Math.max(0, options.retryDelayMs ?? 250) * 2 ** attempt;
+      if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+
   async function visit(url: string): Promise<void> {
     try {
-      const response = await fetcher(url, { redirect: "manual", headers: { "user-agent": options.userAgent ?? "SEO-Autopilot/0.1 (+site-owner-crawler)" } });
+      const response = await fetchPage(url);
       const contentType = response.headers.get("content-type") ?? "";
       const redirectTarget = response.headers.get("location");
       if (redirectTarget && response.status >= 300 && response.status < 400) {
