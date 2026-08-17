@@ -1,9 +1,10 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { GitHubAppAuthenticator, GitHubAppClient, GoogleOAuthTokenProvider, GoogleSearchConsoleClient, PostHogConversionClient, completedSearchWindow, enrichWithConversions } from "@seo-autopilot/connectors";
-import { ChangeWorkflow, InMemoryChangeLedger, createPullRequestProposal, crawlSite, normalizeUrl, pageSnapshotSchema, runDetectors, searchMetricSchema, stableId, workspaceConfigSchema, type ChangeLedger, type MetricBaseline, type Opportunity, type ScanArtifact, type WorkspaceConfig } from "@seo-autopilot/core";
+import { ChangeWorkflow, InMemoryChangeLedger, createPullRequestProposal, crawlSite, normalizeUrl, pageSnapshotSchema, reviewedMetadataRepairs, runDetectors, searchMetricSchema, stableId, workspaceConfigSchema, type ChangeLedger, type MetricBaseline, type Opportunity, type ScanArtifact, type WorkspaceConfig } from "@seo-autopilot/core";
 import { PostgresChangeLedger, PostgresRunStore, createPool, migrate } from "@seo-autopilot/database";
-import { discoverSourcePages, inspectGitFileStates, planRepositoryLinkPatches, validatePatchPlan, type SourcePage } from "@seo-autopilot/site-adapters";
+import { discoverSourcePages, inspectGitFileStates, planMetadataPatch, planRepositoryLinkPatches, validatePatchPlan, type FilePatch, type SourcePage } from "@seo-autopilot/site-adapters";
 import { z } from "zod";
 
 const fileInputSchema = z.object({
@@ -146,8 +147,11 @@ async function googleAccessToken(): Promise<string | undefined> {
 }
 
 interface OrchestrationItem { opportunityId: string; status: "ready" | "opened" | "skipped" | "failed"; reason?: string; file?: string; pullRequestUrl?: string }
+type OrchestrationCandidate =
+  | { kind: "redirect"; opportunity: Opportunity; handledIds: string[] }
+  | { kind: "metadata"; opportunity: Opportunity; handledIds: string[] };
 
-async function orchestrate(config: WorkspaceConfig, artifact: ScanArtifact, live: boolean): Promise<{ mode: "dry-run" | "live"; items: OrchestrationItem[] }> {
+export async function orchestrate(config: WorkspaceConfig, artifact: ScanArtifact, live: boolean): Promise<{ mode: "dry-run" | "live"; items: OrchestrationItem[] }> {
   if (!config.repository) throw new Error("repository configuration is required for orchestration.");
   if (live && !config.github) throw new Error("github configuration is required with --live.");
   const repairGroups = new Map<string, Opportunity[]>();
@@ -161,9 +165,19 @@ async function orchestrate(config: WorkspaceConfig, artifact: ScanArtifact, live
     const key = `${target}\n${destination}`;
     repairGroups.set(key, [...(repairGroups.get(key) ?? []), repair]);
   }
-  const selectedGroups = [...repairGroups.values()].slice(0, config.orchestration.maxChanges);
-  const candidates = selectedGroups.map(groupRedirectOpportunities);
-  const handledIds = new Set(selectedGroups.flat().map((opportunity) => opportunity.id));
+  const metadataRepairs = reviewedMetadataRepairs(config, artifact);
+  const candidates: OrchestrationCandidate[] = [
+    ...[...repairGroups.values()].map((group) => ({ kind: "redirect" as const, opportunity: groupRedirectOpportunities(group), handledIds: group.map((item) => item.id) })),
+    ...artifact.opportunities
+      .filter((item) => item.type === "metadata" && item.affectedUrls.some((url) => metadataRepairs.has(normalizeUrl(url))))
+      .map((opportunity) => ({ kind: "metadata" as const, opportunity, handledIds: [opportunity.id] }))
+  ].sort((left, right) => right.opportunity.estimatedValue - left.opportunity.estimatedValue)
+    .slice(0, config.orchestration.maxChanges);
+  const handledIds = new Set(candidates.flatMap((candidate) => candidate.handledIds));
+  const sourcePages = candidates.some((candidate) => candidate.kind === "metadata")
+    ? await discoverSourcePages({ rootDir: config.repository.rootDir, frameworkRoot: config.repository.frameworkRoot, baseUrl: config.siteUrl, contentRoots: config.repository.contentRoots, protectedPaths: config.protectedPaths })
+    : [];
+  const sourcePagesByUrl = new Map(sourcePages.map((page) => [normalizeUrl(page.url), page]));
   const items: OrchestrationItem[] = [];
   let pool: ReturnType<typeof createPool> | undefined;
   let ledger: ChangeLedger = new InMemoryChangeLedger();
@@ -181,10 +195,33 @@ async function orchestrate(config: WorkspaceConfig, artifact: ScanArtifact, live
   }
   try {
     const workflow = new ChangeWorkflow(ledger);
-    for (const opportunity of candidates) {
+    for (const candidate of candidates) {
+      let opportunity = candidate.opportunity;
       try {
-        const patches = await planRepositoryLinkPatches(config.repository.rootDir, String(opportunity.evidence.target), String(opportunity.evidence.redirectTarget), ["src", ...config.repository.contentRoots]);
-        if (patches.length === 0) { items.push({ opportunityId: opportunity.id, status: "skipped", reason: "No structured source link matches the rendered redirect." }); continue; }
+        let patches: FilePatch[];
+        if (candidate.kind === "redirect") {
+          patches = await planRepositoryLinkPatches(config.repository.rootDir, String(opportunity.evidence.target), String(opportunity.evidence.redirectTarget), ["src", ...config.repository.contentRoots]);
+          if (patches.length === 0) { items.push({ opportunityId: opportunity.id, status: "skipped", reason: "No structured source link matches the rendered redirect." }); continue; }
+        } else {
+          const url = normalizeUrl(opportunity.affectedUrls[0]!);
+          const repair = metadataRepairs.get(url)!;
+          const sourcePage = sourcePagesByUrl.get(url);
+          if (!sourcePage) { items.push({ opportunityId: opportunity.id, status: "skipped", reason: "Metadata PR blocked: URL is not a supported, unprotected static source page." }); continue; }
+          const patch = await planMetadataPatch(config.repository.rootDir, sourcePage, {
+            ...(repair.title ? { title: repair.title } : {}),
+            ...(repair.description ? { description: repair.description } : {})
+          });
+          if (!patch) { items.push({ opportunityId: opportunity.id, status: "skipped", reason: "Reviewed metadata does not change the current source file." }); continue; }
+          patches = [patch];
+          opportunity = {
+            ...opportunity,
+            evidence: {
+              ...opportunity.evidence,
+              proposedMetadata: { ...(repair.title ? { title: repair.title } : {}), ...(repair.description ? { description: repair.description } : {}) },
+              repairApproval: { approvedBy: repair.approvedBy, approvedAt: repair.approvedAt, ...(repair.note ? { note: repair.note } : {}) }
+            }
+          };
+        }
         const states = await inspectGitFileStates(config.repository.rootDir, patches.map((patch) => patch.filePath));
         const ineligible = patches.filter((patch) => states.get(patch.filePath) !== "tracked-clean");
         if (ineligible.length > 0) {
@@ -284,4 +321,4 @@ function printResult(
   }, null, 2));
 }
 
-await main();
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) await main();

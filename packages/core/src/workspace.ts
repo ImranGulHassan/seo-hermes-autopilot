@@ -36,6 +36,16 @@ export const workspaceConfigSchema = z.object({
       approvedBy: z.string().min(1),
       approvedAt: z.string().datetime(),
       note: z.string().min(1).optional()
+    })).default([]),
+    metadataRepairs: z.array(z.object({
+      url: z.string().min(1),
+      title: z.string().min(10).max(120).optional(),
+      description: z.string().min(40).max(300).optional(),
+      approvedBy: z.string().min(1),
+      approvedAt: z.string().datetime(),
+      note: z.string().min(1).optional()
+    }).refine((repair) => Boolean(repair.title || repair.description), {
+      message: "A metadata repair must provide a title or description."
     })).default([])
   }).default({ maxChanges: 5 })
 });

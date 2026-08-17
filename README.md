@@ -97,6 +97,15 @@ property identifier when performance analysis is wanted:
         "approvedAt": "2026-08-16T09:00:00.000Z",
         "note": "Reviewed against the current navigation structure"
       }
+    ],
+    "metadataRepairs": [
+      {
+        "url": "/about",
+        "description": "Learn how the team maintains the product, its evidence standards, and its customer commitments.",
+        "approvedBy": "owner@example.com",
+        "approvedAt": "2026-08-16T09:00:00.000Z",
+        "note": "Reviewed against the visible page copy"
+      }
     ]
   }
 }
@@ -165,8 +174,12 @@ Redirect-chain findings with an exact source file and known final URL are
 eligible. A broken 404 can also become eligible when its destination is
 explicitly recorded under `orchestration.destinationMappings`, includes the
 reviewer and approval time, remains same-origin, and returns 2xx in the current
-crawl. Unmapped broken links, metadata, internal-link, CTR, and indexability
-findings remain proposal-only.
+crawl. Unmapped broken links, internal-link, CTR, and indexability findings
+remain proposal-only. Metadata findings become eligible only when the workspace
+records exact replacement copy, reviewer identity, and approval time. Every
+affected field must be supplied, the replacement must remain unique in the
+current crawl, and the URL must map to a supported, unprotected static source
+page. Dynamic metadata and unreviewed copy remain proposal-only.
 
 Rendered redirect occurrences are traced through structured source contexts:
 React `href` values, Markdown links, and MDX `parent`/`relatedContent`

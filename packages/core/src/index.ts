@@ -4,6 +4,7 @@ export * from "./crawler.js";
 export * from "./detectors.js";
 export * from "./workflow.js";
 export * from "./measurement.js";
+export * from "./metadata-repairs.js";
 export * from "./pull-request.js";
 export * from "./workspace.js";
 export * from "./scheduler.js";
