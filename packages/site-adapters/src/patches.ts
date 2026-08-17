@@ -102,6 +102,7 @@ function updateNextMetadata(source: string, metadata: { title?: string; descript
     return `export const metadata = {\n${properties}\n};\n\n${source}`;
   }
   let contents = block[1] ?? "";
+  if (contents.trim() && !contents.includes("\n")) contents = `\n  ${contents.trim()}\n`;
   for (const [key, value] of Object.entries(metadata)) {
     if (!value) continue;
     const property = new RegExp(`((?:^|[,\\n])\\s*${key}\\s*:\\s*)(["'\\x60])([\\s\\S]*?)\\2`);
