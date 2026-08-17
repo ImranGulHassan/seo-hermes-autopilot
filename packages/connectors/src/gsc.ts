@@ -21,6 +21,8 @@ export interface GoogleOAuthTokenProviderOptions {
   fetch?: typeof globalThis.fetch;
   tokenEndpoint?: string;
   now?: () => Date;
+  retries?: number;
+  retryDelayMs?: number;
 }
 
 const oauthTokenSchema = z.object({ access_token: z.string().min(1), expires_in: z.number().positive().default(3600) });
@@ -33,11 +35,11 @@ export class GoogleOAuthTokenProvider {
   async getAccessToken(): Promise<string> {
     const now = (this.options.now ?? (() => new Date()))().getTime();
     if (this.cached && this.cached.expiresAt - now > 60_000) return this.cached.token;
-    const response = await (this.options.fetch ?? globalThis.fetch)(this.options.tokenEndpoint ?? "https://oauth2.googleapis.com/token", {
+    const response = await fetchWithRetry(this.options.fetch ?? globalThis.fetch, this.options.tokenEndpoint ?? "https://oauth2.googleapis.com/token", {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ client_id: this.options.clientId, client_secret: this.options.clientSecret, refresh_token: this.options.refreshToken, grant_type: "refresh_token" })
-    });
+    }, this.options.retries, this.options.retryDelayMs);
     if (!response.ok) throw new Error(`Google OAuth refresh failed (${response.status}): ${(await response.text()).slice(0, 500)}`);
     const token = oauthTokenSchema.parse(await response.json());
     this.cached = { token: token.access_token, expiresAt: now + token.expires_in * 1000 };
@@ -51,6 +53,8 @@ export interface GscClientOptions {
   endpoint?: string;
   rowLimit?: number;
   maxRows?: number;
+  retries?: number;
+  retryDelayMs?: number;
 }
 
 export function completedSearchWindow(now = new Date(), days = 28, lagDays = 3): SearchWindow {
@@ -93,7 +97,7 @@ export class GoogleSearchConsoleClient {
   private async fetchMetrics(propertyUrl: string, window: SearchWindow, dimension: "page" | "query", aggregationType: "byPage" | "auto"): Promise<z.infer<typeof responseSchema>["rows"]> {
     const rows: z.infer<typeof responseSchema>["rows"] = [];
     for (let startRow = 0; startRow < this.maxRows; startRow += this.rowLimit) {
-      const response = await this.fetcher(`${this.endpoint}/sites/${encodeURIComponent(propertyUrl)}/searchAnalytics/query`, {
+      const response = await fetchWithRetry(this.fetcher, `${this.endpoint}/sites/${encodeURIComponent(propertyUrl)}/searchAnalytics/query`, {
         method: "POST",
         headers: { authorization: `Bearer ${this.options.accessToken}`, "content-type": "application/json" },
         body: JSON.stringify({
@@ -105,7 +109,7 @@ export class GoogleSearchConsoleClient {
           rowLimit: Math.min(this.rowLimit, this.maxRows - startRow),
           startRow
         })
-      });
+      }, this.options.retries, this.options.retryDelayMs);
       if (!response.ok) {
         const detail = (await response.text()).slice(0, 500);
         throw new Error(`GSC request failed (${response.status}): ${detail || response.statusText}`);
@@ -118,13 +122,35 @@ export class GoogleSearchConsoleClient {
   }
 
   async lastCrawledAt(propertyUrl: string, inspectionUrl: string): Promise<Date | null> {
-    const response = await this.fetcher("https://searchconsole.googleapis.com/v1/urlInspection/index:inspect", {
+    const response = await fetchWithRetry(this.fetcher, "https://searchconsole.googleapis.com/v1/urlInspection/index:inspect", {
       method: "POST",
       headers: { authorization: `Bearer ${this.options.accessToken}`, "content-type": "application/json" },
       body: JSON.stringify({ inspectionUrl, siteUrl: propertyUrl, languageCode: "en-US" })
-    });
+    }, this.options.retries, this.options.retryDelayMs);
     if (!response.ok) throw new Error(`GSC URL inspection failed (${response.status}): ${(await response.text()).slice(0, 500)}`);
     const time = inspectionSchema.parse(await response.json()).inspectionResult?.indexStatusResult?.lastCrawlTime;
     return time ? new Date(time) : null;
   }
+}
+
+async function fetchWithRetry(
+  fetcher: typeof globalThis.fetch,
+  input: string,
+  init: RequestInit,
+  retries = 2,
+  retryDelayMs = 250
+): Promise<Response> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      const response = await fetcher(input, init);
+      if (!isTransientStatus(response.status) || attempt >= retries) return response;
+    } catch (error) {
+      if (attempt >= retries) throw error;
+    }
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, retryDelayMs * 2 ** attempt));
+  }
+}
+
+function isTransientStatus(status: number): boolean {
+  return status === 408 || status === 429 || status >= 500;
 }

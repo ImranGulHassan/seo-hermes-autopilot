@@ -54,3 +54,38 @@ test("refreshes and caches a Google OAuth access token", async () => {
   assert.equal(await provider.getAccessToken(), "fresh-access");
   assert.equal(calls, 1);
 });
+
+test("retries a transient OAuth network failure", async () => {
+  let calls = 0;
+  const provider = new GoogleOAuthTokenProvider({
+    clientId: "client",
+    clientSecret: "secret",
+    refreshToken: "refresh",
+    retries: 1,
+    retryDelayMs: 0,
+    fetch: async () => {
+      calls += 1;
+      if (calls === 1) throw new TypeError("fetch failed");
+      return Response.json({ access_token: "recovered-access", expires_in: 3600 });
+    }
+  });
+
+  assert.equal(await provider.getAccessToken(), "recovered-access");
+  assert.equal(calls, 2);
+});
+
+test("retries a transient GSC response without retrying permanent errors", async () => {
+  let calls = 0;
+  const client = new GoogleSearchConsoleClient({
+    accessToken: "secret-token",
+    retries: 1,
+    retryDelayMs: 0,
+    fetch: async () => {
+      calls += 1;
+      return calls === 1 ? new Response("unavailable", { status: 503 }) : Response.json({ rows: [] });
+    }
+  });
+
+  assert.deepEqual(await client.fetchPageMetrics("sc-domain:example.com"), []);
+  assert.equal(calls, 2);
+});
