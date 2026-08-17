@@ -19,6 +19,37 @@ test("crawler discovers same-origin pages and annotates broken links and redirec
   assert.equal(home?.internalLinks.some((link) => link.href.includes("outside.test")), false);
 });
 
+test("crawler retries a transient server failure before annotating an internal link", async () => {
+  let targetAttempts = 0;
+  const result = await crawlSite("https://example.com", {
+    fetch: async (input) => {
+      const url = String(input);
+      if (url === "https://example.com/") {
+        return new Response('<html><body><a href="/sometimes">Sometimes available</a></body></html>', {
+          status: 200,
+          headers: { "content-type": "text/html" },
+        });
+      }
+      if (url === "https://example.com/sometimes") {
+        targetAttempts += 1;
+        return targetAttempts === 1
+          ? new Response("", { status: 502 })
+          : new Response("<html><body>Available</body></html>", {
+              status: 200,
+              headers: { "content-type": "text/html" },
+            });
+      }
+      return new Response("", { status: 404 });
+    },
+    maxPages: 2,
+    retryDelayMs: 0,
+  });
+
+  assert.equal(targetAttempts, 2);
+  assert.equal(result.pages.find((page) => page.url.endsWith("/sometimes"))?.status, 200);
+  assert.equal(result.pages[0]?.internalLinks[0]?.status, 200);
+});
+
 test("crawler follows a seed redirect and adopts its canonical www origin", async () => {
   const responses = new Map<string, Response>([
     ["https://example.com/", new Response("", { status: 307, headers: { location: "https://www.example.com/" } })],
