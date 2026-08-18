@@ -78,7 +78,12 @@ test("adds metadata to a single-line object with no trailing comma", async (cont
     description: "Learn about the Example team, its product principles, and the information on this page."
   });
 
-  assert.match(patch?.after ?? "", /metadata = \{\n  title: "About the Example Team",\n  description:[^\n]+\n\};/);
+  assert.match(patch?.after ?? "", /metadata = \{\n  title: "About the Example Team",\n  description: "Learn about[^\n]+\n\};/);
+
+  const longPatch = await planMetadataPatch(root, about, {
+    description: "Learn about the Example team, its product principles, the people responsible for the service, and all of the detailed information published on this page."
+  });
+  assert.match(longPatch?.after ?? "", /  description:\n    "Learn about[^\n]+",\n\};/);
 });
 
 test("applies only after validators pass", async (context) => {

@@ -110,7 +110,10 @@ function updateNextMetadata(source: string, metadata: { title?: string; descript
     else {
       const existing = contents.trimEnd();
       const separator = existing.trim() && !existing.trim().endsWith(",") ? "," : "";
-      contents = `${existing}${separator}\n  ${key}: ${JSON.stringify(value)},\n`;
+      const serialized = JSON.stringify(value);
+      const propertyLine = `  ${key}: ${serialized},`;
+      const formattedProperty = propertyLine.length > 120 ? `  ${key}:\n    ${serialized},` : propertyLine;
+      contents = `${existing}${separator}\n${formattedProperty}\n`;
     }
   }
   return source.replace(blockExpression, (whole) => whole.replace(block[1] ?? "", contents));
