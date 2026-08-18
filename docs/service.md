@@ -56,8 +56,9 @@ queries the authoritative GitHub pull request, review, merge, and deployment
 state, and advances only valid transitions. A merge by a repository user counts
 as explicit human approval when a separate approval review is absent.
 
-Only a successful deployment whose environment is exactly `Production` can
-advance a merged change to `deployed`. Every recovered transition receives an
+Only a successful deployment whose environment is exactly `Production` and
+whose SHA is the merge commit or is proven by GitHub to contain it can advance
+a merged change to `deployed`. Every recovered transition receives an
 audit entry in the serialized ledger record. Repeated runs are idempotent;
 ambiguous or incomplete provider state remains unchanged and is reported as
 waiting. The job requires `DATABASE_URL`, `GITHUB_APP_ID`,
