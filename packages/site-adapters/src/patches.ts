@@ -102,6 +102,7 @@ function updateNextMetadata(source: string, metadata: { title?: string; descript
     return `export const metadata = {\n${properties}\n};\n\n${source}`;
   }
   let contents = block[1] ?? "";
+  if (contents.trim() && !contents.includes("\n")) contents = `\n  ${contents.trim()}\n`;
   for (const [key, value] of Object.entries(metadata)) {
     if (!value) continue;
     const property = new RegExp(`((?:^|[,\\n])\\s*${key}\\s*:\\s*)(["'\\x60])([\\s\\S]*?)\\2`);
@@ -109,7 +110,10 @@ function updateNextMetadata(source: string, metadata: { title?: string; descript
     else {
       const existing = contents.trimEnd();
       const separator = existing.trim() && !existing.trim().endsWith(",") ? "," : "";
-      contents = `${existing}${separator}\n  ${key}: ${JSON.stringify(value)},\n`;
+      const serialized = JSON.stringify(value);
+      const propertyLine = `  ${key}: ${serialized},`;
+      const formattedProperty = propertyLine.length > 120 ? `  ${key}:\n    ${serialized},` : propertyLine;
+      contents = `${existing}${separator}\n${formattedProperty}\n`;
     }
   }
   return source.replace(blockExpression, (whole) => whole.replace(block[1] ?? "", contents));
