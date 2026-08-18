@@ -40,8 +40,9 @@ const lifecyclePullSchema = z.object({
   merged_by: z.object({ login: z.string() }).nullable(), head: z.object({ ref: z.string() })
 });
 const reviewSchema = z.object({ state: z.string(), submitted_at: z.string().datetime().nullable(), user: z.object({ login: z.string() }).nullable() });
-const deploymentSchema = z.object({ id: z.number().int(), environment: z.string(), created_at: z.string().datetime() });
+const deploymentSchema = z.object({ id: z.number().int(), sha: z.string(), environment: z.string(), created_at: z.string().datetime() });
 const deploymentStatusSchema = z.object({ state: z.string(), created_at: z.string().datetime() });
+const comparisonSchema = z.object({ status: z.enum(["ahead", "behind", "diverged", "identical"]) });
 
 export interface GitHubPullRequestLifecycle {
   closed?: boolean;
@@ -109,8 +110,16 @@ export class GitHubAppClient {
     const approval = approvals.at(-1);
     let productionDeployedAt: Date | null = null;
     if (pull.merge_commit_sha) {
-      const deployments = z.array(deploymentSchema).parse(await this.request(`${repositoryPath}/deployments?sha=${encodeURIComponent(pull.merge_commit_sha)}&environment=Production&per_page=20`));
+      const exact = z.array(deploymentSchema).parse(await this.request(`${repositoryPath}/deployments?sha=${encodeURIComponent(pull.merge_commit_sha)}&environment=Production&per_page=20`));
+      const deployments = exact.length > 0
+        ? exact
+        : z.array(deploymentSchema).parse(await this.request(`${repositoryPath}/deployments?environment=Production&per_page=20`));
       for (const deployment of deployments) {
+        if (pull.merged_at && new Date(deployment.created_at) < new Date(pull.merged_at)) continue;
+        if (deployment.sha !== pull.merge_commit_sha) {
+          const comparison = comparisonSchema.parse(await this.request(`${repositoryPath}/compare/${encodeURIComponent(pull.merge_commit_sha)}...${encodeURIComponent(deployment.sha)}`));
+          if (!['ahead', 'identical'].includes(comparison.status)) continue;
+        }
         const statuses = z.array(deploymentStatusSchema).parse(await this.request(`${repositoryPath}/deployments/${deployment.id}/statuses?per_page=20`));
         const success = statuses.filter((status) => status.state.toLowerCase() === "success").sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
         if (success && (!productionDeployedAt || new Date(success.created_at) > productionDeployedAt)) productionDeployedAt = new Date(success.created_at);

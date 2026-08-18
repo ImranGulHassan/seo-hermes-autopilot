@@ -88,6 +88,47 @@ test("refuses a PR when a local source file is absent from the remote base", asy
   assert.equal(blobWrites, 0);
 });
 
+test("recognizes a production deployment whose SHA contains an earlier merge", async () => {
+  const client = new GitHubAppClient({ installationToken: "token", fetch: async (input) => {
+    const url = String(input);
+    if (url.endsWith("/pulls/20")) return Response.json({
+      state: "closed", closed_at: "2026-02-01T10:00:00Z", merged: true, merged_at: "2026-02-01T10:00:00Z",
+      merge_commit_sha: "merge-sha", html_url: "https://github.com/acme/site/pull/20", merged_by: { login: "owner" }, head: { ref: "seo-autopilot/opp_20" }
+    });
+    if (url.endsWith("/pulls/20/reviews")) return Response.json([]);
+    if (url.includes("/deployments?sha=merge-sha")) return Response.json([]);
+    if (url.includes("/deployments?environment=Production")) return Response.json([
+      { id: 30, sha: "release-sha", environment: "Production", created_at: "2026-02-01T10:05:00Z" }
+    ]);
+    if (url.endsWith("/compare/merge-sha...release-sha")) return Response.json({ status: "ahead" });
+    if (url.includes("/deployments/30/statuses")) return Response.json([{ state: "success", created_at: "2026-02-01T10:10:00Z" }]);
+    return Response.json({ message: "unexpected" }, { status: 500 });
+  } });
+
+  const lifecycle = await client.getPullRequestLifecycle("acme", "site", 20);
+  assert.equal(lifecycle.productionDeployedAt?.toISOString(), "2026-02-01T10:10:00.000Z");
+});
+
+test("rejects a production deployment whose SHA diverges from the merge", async () => {
+  const client = new GitHubAppClient({ installationToken: "token", fetch: async (input) => {
+    const url = String(input);
+    if (url.endsWith("/pulls/21")) return Response.json({
+      state: "closed", closed_at: "2026-02-01T10:00:00Z", merged: true, merged_at: "2026-02-01T10:00:00Z",
+      merge_commit_sha: "merge-sha", html_url: "https://github.com/acme/site/pull/21", merged_by: { login: "owner" }, head: { ref: "seo-autopilot/opp_21" }
+    });
+    if (url.endsWith("/pulls/21/reviews")) return Response.json([]);
+    if (url.includes("/deployments?sha=merge-sha")) return Response.json([]);
+    if (url.includes("/deployments?environment=Production")) return Response.json([
+      { id: 31, sha: "diverged-sha", environment: "Production", created_at: "2026-02-01T10:05:00Z" }
+    ]);
+    if (url.endsWith("/compare/merge-sha...diverged-sha")) return Response.json({ status: "diverged" });
+    return Response.json({ message: "unexpected" }, { status: 500 });
+  } });
+
+  const lifecycle = await client.getPullRequestLifecycle("acme", "site", 21);
+  assert.equal(lifecycle.productionDeployedAt, null);
+});
+
 test("reconciles a missed human merge and production deployment exactly once", async () => {
   const ledger = new InMemoryChangeLedger();
   const workflow = new ChangeWorkflow(ledger);

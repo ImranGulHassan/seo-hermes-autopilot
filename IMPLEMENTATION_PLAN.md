@@ -110,11 +110,11 @@ Acceptance: dirty or untracked customer work is never uploaded by SEO Autopilot,
 
 - Poll authoritative GitHub PR/review state for active ledger records.
 - Treat a human merge as approval when no separate approval review was delivered.
-- Require a successful `Production` deployment for the exact merge commit.
+- Require a successful `Production` deployment whose SHA is the merge commit or is proven by GitHub comparison to contain it.
 - Recover only valid approval → merge → deployment transitions and remain idempotent.
 - Record an audit note for every lifecycle state recovered after a missed webhook.
 
-Acceptance: missed webhooks cannot permanently strand a change, repeated reconciliation produces no duplicate transitions, and preview deployments cannot start measurement.
+Acceptance: missed webhooks cannot permanently strand a change, batched releases advance every included merge, repeated reconciliation produces no duplicate transitions, and preview or diverged deployments cannot start measurement.
 
 ## Milestone 12 — Unattended pilot loop (complete)
 
