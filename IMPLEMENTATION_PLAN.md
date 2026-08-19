@@ -175,6 +175,10 @@ Acceptance: unreviewed copy cannot become code, stale or duplicate metadata is
 rejected before validation, dry runs leave the repository unchanged, and live
 runs can open only validator-gated draft PRs for approved static pages.
 
+Operational hardening: recurring runs treat retained approvals as satisfied only
+when the live page exactly matches every approved field; missing or mismatched
+approvals remain explicit failures.
+
 ## Pilot and expansion gates
 
 - Manually support three established Next.js sites before unattended scheduling.

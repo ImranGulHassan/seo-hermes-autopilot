@@ -41,6 +41,33 @@ test("accepts a complete same-origin reviewed metadata repair", () => {
   assert.equal(repairs.get("https://example.com/about")?.approvedBy, "owner@example.com");
 });
 
+test("skips an approved metadata repair that is already present on the live page", () => {
+  const applied = structuredClone(artifact);
+  applied.pages[0]!.title = "About the Example Company";
+  applied.pages[0]!.description = "Learn how the Example Company maintains its reviewed product and customer information.";
+  applied.opportunities = [];
+  const repairs = reviewedMetadataRepairs(config({
+    url: "/about",
+    title: "About the Example Company",
+    description: "Learn how the Example Company maintains its reviewed product and customer information.",
+    approvedBy: "owner@example.com",
+    approvedAt: "2026-08-16T09:00:00.000Z"
+  }), applied);
+  assert.equal(repairs.size, 0);
+});
+
+test("rejects a retained approval when the live metadata does not match it", () => {
+  const noFinding = structuredClone(artifact);
+  noFinding.opportunities = [];
+  assert.throws(() => reviewedMetadataRepairs(config({
+    url: "/about",
+    title: "About the Example Company",
+    description: "Learn how the Example Company maintains its reviewed product and customer information.",
+    approvedBy: "owner@example.com",
+    approvedAt: "2026-08-16T09:00:00.000Z"
+  }), noFinding), /no current metadata opportunity/);
+});
+
 test("rejects incomplete, stale, off-origin, and duplicate reviewed metadata", () => {
   const approvedAt = "2026-08-16T09:00:00.000Z";
   assert.throws(() => reviewedMetadataRepairs(config({ url: "/about", title: "About the Example Company", approvedBy: "owner@example.com", approvedAt }), artifact), /description/);
