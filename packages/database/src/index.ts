@@ -23,7 +23,7 @@ export class PostgresChangeLedger implements ChangeLedger {
   async get(id: string) { return this.one("SELECT payload FROM changes WHERE id = $1", [id]); }
   async list() {
     const result = this.siteId
-      ? await this.database.query<{ payload: ChangeRecord }>("SELECT c.payload FROM changes c JOIN opportunities o ON o.id=c.opportunity_id WHERE o.site_id=$1 ORDER BY c.updated_at DESC", [this.siteId])
+      ? await this.database.query<{ payload: ChangeRecord }>("SELECT c.payload FROM changes c WHERE c.site_id=$1 ORDER BY c.updated_at DESC", [this.siteId])
       : await this.database.query<{ payload: ChangeRecord }>("SELECT payload FROM changes ORDER BY updated_at DESC");
     return result.rows.map((row) => row.payload);
   }
@@ -33,11 +33,11 @@ export class PostgresChangeLedger implements ChangeLedger {
   async save(record: ChangeRecord) {
     const pr = record.externalPullRequest;
     await this.database.query(
-      `INSERT INTO changes (id, opportunity_id, fingerprint, state, github_owner, github_repository, github_pr_number, github_head_branch, payload)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)
-       ON CONFLICT (id) DO UPDATE SET state=EXCLUDED.state, github_owner=EXCLUDED.github_owner, github_repository=EXCLUDED.github_repository,
+      `INSERT INTO changes (id, site_id, opportunity_id, fingerprint, state, github_owner, github_repository, github_pr_number, github_head_branch, payload)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)
+       ON CONFLICT (id) DO UPDATE SET site_id=COALESCE(EXCLUDED.site_id,changes.site_id), state=EXCLUDED.state, github_owner=EXCLUDED.github_owner, github_repository=EXCLUDED.github_repository,
        github_pr_number=EXCLUDED.github_pr_number, github_head_branch=EXCLUDED.github_head_branch, payload=EXCLUDED.payload, updated_at=now()`,
-      [record.id, record.opportunityId, record.fingerprint, record.state, pr?.owner ?? null, pr?.repository ?? null, pr?.number ?? null, pr?.headBranch ?? null, JSON.stringify(record)]
+      [record.id, this.siteId ?? null, record.opportunityId, record.fingerprint, record.state, pr?.owner ?? null, pr?.repository ?? null, pr?.number ?? null, pr?.headBranch ?? null, JSON.stringify(record)]
     );
   }
   private async one(text: string, values: unknown[]): Promise<ChangeRecord | undefined> {
@@ -82,7 +82,7 @@ export class PostgresRunStore {
   }
   async listChanges(siteId?: string): Promise<ChangeRecord[]> {
     const result = siteId
-      ? await this.database.query<{ payload: ChangeRecord }>("SELECT c.payload FROM changes c JOIN opportunities o ON o.id=c.opportunity_id WHERE o.site_id=$1 ORDER BY c.updated_at DESC", [siteId])
+      ? await this.database.query<{ payload: ChangeRecord }>("SELECT c.payload FROM changes c WHERE c.site_id=$1 ORDER BY c.updated_at DESC", [siteId])
       : await this.database.query<{ payload: ChangeRecord }>("SELECT payload FROM changes ORDER BY updated_at DESC");
     return result.rows.map((row) => row.payload);
   }

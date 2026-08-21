@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS opportunities (
 
 CREATE TABLE IF NOT EXISTS changes (
   id text PRIMARY KEY,
+  site_id text REFERENCES sites(id) ON DELETE CASCADE,
   opportunity_id text NOT NULL,
   fingerprint text NOT NULL,
   state text NOT NULL,
@@ -43,6 +44,11 @@ CREATE TABLE IF NOT EXISTS changes (
   UNIQUE NULLS NOT DISTINCT (github_owner, github_repository, github_pr_number)
 );
 
+ALTER TABLE changes ADD COLUMN IF NOT EXISTS site_id text REFERENCES sites(id) ON DELETE CASCADE;
+UPDATE changes c SET site_id = o.site_id
+FROM opportunities o
+WHERE c.opportunity_id = o.id AND c.site_id IS NULL;
+
 CREATE TABLE IF NOT EXISTS webhook_deliveries (
   delivery_id text PRIMARY KEY,
   received_at timestamptz NOT NULL DEFAULT now()
@@ -50,3 +56,4 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
 
 CREATE INDEX IF NOT EXISTS opportunities_site_value_idx ON opportunities(site_id, estimated_value DESC);
 CREATE INDEX IF NOT EXISTS changes_state_idx ON changes(state);
+CREATE INDEX IF NOT EXISTS changes_site_state_idx ON changes(site_id, state);
