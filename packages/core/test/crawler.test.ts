@@ -93,3 +93,21 @@ test("crawls explicit repository seeds without marking them as sitemap entries",
   assert.equal(repositoryPage?.status, 200);
   assert.equal(repositoryPage?.sitemapListed, false);
 });
+
+test("prioritizes explicit seeds when a sitemap exceeds the crawl budget", async () => {
+  const responses = new Map<string, Response>([
+    ["https://example.com/", new Response('<html><head><title>Home page title</title></head><body>Home</body></html>', { status: 200, headers: { "content-type": "text/html" } })],
+    ["https://example.com/robots.txt", new Response("", { status: 404 })],
+    ["https://example.com/sitemap.xml", new Response('<?xml version="1.0"?><urlset><url><loc>https://example.com/orphan-one</loc></url><url><loc>https://example.com/orphan-two</loc></url></urlset>', { status: 200 })],
+    ["https://example.com/approved", new Response('<html><head><title>Approved page</title></head><body>Approved</body></html>', { status: 200, headers: { "content-type": "text/html" } })]
+  ]);
+  const result = await crawlSite("https://example.com", {
+    maxPages: 2,
+    seedUrls: ["https://example.com/approved"],
+    fetch: async (input) => responses.get(String(input))?.clone() ?? new Response("", { status: 404 })
+  });
+  assert.deepEqual(result.pages.map((page) => page.url), [
+    "https://example.com/",
+    "https://example.com/approved"
+  ]);
+});

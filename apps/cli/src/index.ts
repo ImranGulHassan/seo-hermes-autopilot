@@ -79,7 +79,13 @@ async function runWorkspace(config: WorkspaceConfig): Promise<ScanArtifact> {
       repositoryErrors.push({ source: "repository", message: error instanceof Error ? error.message : String(error) });
     }
   }
-  const crawl = await crawlSite(config.siteUrl, { ...config.crawl, seedUrls: sources.map((source) => source.url) });
+  const approvedMetadataUrls = config.orchestration.metadataRepairs.map((repair) =>
+    new URL(repair.url, config.siteUrl).toString()
+  );
+  const crawl = await crawlSite(config.siteUrl, {
+    ...config.crawl,
+    seedUrls: [...sources.map((source) => source.url), ...approvedMetadataUrls]
+  });
   const errors: ScanArtifact["errors"] = [...crawl.errors.map((error) => ({ source: "crawler" as const, message: error.error, url: error.url })), ...repositoryErrors];
   const sourceByUrl = new Map(sources.map((source) => [normalizeUrl(source.url), source.filePath]));
   const sourceStates = config.repository && sources.length > 0 ? await inspectGitFileStates(config.repository.rootDir, sources.map((source) => source.filePath)) : new Map();

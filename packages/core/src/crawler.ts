@@ -113,14 +113,17 @@ export async function crawlSite(startUrl: string, options: CrawlOptions = {}): P
   if (options.sitemapUrls === undefined) {
     for (const url of await discoverSitemapUrls(allowedOrigins, fetcher, options.userAgent, maxPages)) sitemapUrls.add(url);
   }
-  for (const url of sitemapUrls) {
-    if (hasAllowedOrigin(url, allowedOrigins) && !queued.has(url) && queued.size < maxPages) { queued.add(url); queue.push(url); }
-  }
+  // Explicit repository and reviewed-repair seeds are higher priority than
+  // sitemap discovery. Large sitemaps can otherwise consume the entire crawl
+  // budget and make safety validation randomly lose previously approved URLs.
   for (const candidate of options.seedUrls ?? []) {
     try {
       const url = normalizeUrl(candidate);
       if (hasAllowedOrigin(url, allowedOrigins) && !queued.has(url) && queued.size < maxPages) { queued.add(url); queue.push(url); }
     } catch { /* Invalid optional seeds do not abort the technical crawl. */ }
+  }
+  for (const url of sitemapUrls) {
+    if (hasAllowedOrigin(url, allowedOrigins) && !queued.has(url) && queued.size < maxPages) { queued.add(url); queue.push(url); }
   }
   for (const page of pages) page.sitemapListed = sitemapUrls.has(page.url);
 
