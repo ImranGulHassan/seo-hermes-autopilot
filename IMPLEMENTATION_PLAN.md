@@ -179,6 +179,9 @@ Operational hardening: recurring runs treat retained approvals as satisfied only
 when the live page exactly matches every approved field; missing or mismatched
 approvals remain explicit failures.
 
+Durability hardening: changes retain their own site identity so immutable
+baselines and measurement history never depend on a mutable opportunity row.
+
 ## Pilot and expansion gates
 
 - Manually support three established Next.js sites before unattended scheduling.
