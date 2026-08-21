@@ -32,7 +32,7 @@ export function reviewedMetadataRepairs(
     if (!opportunity) {
       const page = artifact.pages.find((item) => normalizeUrl(item.url) === url);
       const alreadyApplied = page
-        && (!configured.title || page.title?.trim() === configured.title.trim())
+        && (!configured.title || matchesRenderedTitle(page.title, configured.title))
         && (!configured.description || page.description?.trim() === configured.description.trim());
       if (alreadyApplied) continue;
       throw new Error(`Metadata repair has no current metadata opportunity: ${configured.url}`);
@@ -58,6 +58,17 @@ export function reviewedMetadataRepairs(
     });
   }
   return repairs;
+}
+
+function matchesRenderedTitle(rendered: string | null, approved: string): boolean {
+  if (!rendered) return false;
+  const actual = rendered.trim();
+  const expected = approved.trim();
+  if (actual === expected) return true;
+  return [" · ", " | ", " — "].some((separator) => {
+    const prefix = `${expected}${separator}`;
+    return actual.startsWith(prefix) && actual.length > prefix.length;
+  });
 }
 
 function assertUnique(
