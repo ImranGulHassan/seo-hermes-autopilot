@@ -16,18 +16,27 @@ export function reviewedMetadataRepairs(
   const siteOrigin = new URL(config.siteUrl).origin;
   const indexablePages = artifact.pages.filter((page) => page.indexable);
   const repairs = new Map<string, ReviewedMetadataRepair>();
+  const configuredUrls = new Set<string>();
 
   for (const configured of config.orchestration.metadataRepairs) {
     const url = normalizeUrl(new URL(configured.url, config.siteUrl).toString());
     if (new URL(url).origin !== siteOrigin) {
       throw new Error(`Metadata repair must remain on ${siteOrigin}: ${configured.url}`);
     }
-    if (repairs.has(url)) throw new Error(`Duplicate metadata repair for ${configured.url}`);
+    if (configuredUrls.has(url)) throw new Error(`Duplicate metadata repair for ${configured.url}`);
+    configuredUrls.add(url);
 
     const opportunity = artifact.opportunities.find(
       (item) => item.type === "metadata" && item.affectedUrls.some((affected) => normalizeUrl(affected) === url)
     );
-    if (!opportunity) throw new Error(`Metadata repair has no current metadata opportunity: ${configured.url}`);
+    if (!opportunity) {
+      const page = artifact.pages.find((item) => normalizeUrl(item.url) === url);
+      const alreadyApplied = page
+        && (!configured.title || page.title?.trim() === configured.title.trim())
+        && (!configured.description || page.description?.trim() === configured.description.trim());
+      if (alreadyApplied) continue;
+      throw new Error(`Metadata repair has no current metadata opportunity: ${configured.url}`);
+    }
     const issues = Array.isArray(opportunity.evidence.issues)
       ? opportunity.evidence.issues.filter((issue): issue is string => typeof issue === "string")
       : [];
