@@ -56,6 +56,35 @@ test("skips an approved metadata repair that is already present on the live page
   assert.equal(repairs.size, 0);
 });
 
+test("accepts an approved source title with a rendered site-title suffix", () => {
+  const applied = structuredClone(artifact);
+  applied.pages[0]!.title = "About the Example Company · Example";
+  applied.pages[0]!.description = "Learn how the Example Company maintains its reviewed product and customer information.";
+  applied.opportunities = [];
+  const repairs = reviewedMetadataRepairs(config({
+    url: "/about",
+    title: "About the Example Company",
+    description: "Learn how the Example Company maintains its reviewed product and customer information.",
+    approvedBy: "owner@example.com",
+    approvedAt: "2026-08-16T09:00:00.000Z"
+  }), applied);
+  assert.equal(repairs.size, 0);
+});
+
+test("rejects partial title matches that are not a site-title template", () => {
+  const drifted = structuredClone(artifact);
+  drifted.pages[0]!.title = "About the Example Company pricing changed";
+  drifted.pages[0]!.description = "Learn how the Example Company maintains its reviewed product and customer information.";
+  drifted.opportunities = [];
+  assert.throws(() => reviewedMetadataRepairs(config({
+    url: "/about",
+    title: "About the Example Company",
+    description: "Learn how the Example Company maintains its reviewed product and customer information.",
+    approvedBy: "owner@example.com",
+    approvedAt: "2026-08-16T09:00:00.000Z"
+  }), drifted), /no current metadata opportunity/);
+});
+
 test("rejects a retained approval when the live metadata does not match it", () => {
   const noFinding = structuredClone(artifact);
   noFinding.opportunities = [];
