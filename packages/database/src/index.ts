@@ -20,6 +20,8 @@ export type ConnectorProvider = "github" | "google-search-console" | "posthog";
 export type ConnectorStatus = "disconnected" | "pending" | "connected" | "error";
 export type OnboardingState = "site" | "github" | "search-console" | "analytics" | "configuration" | "scan" | "complete";
 export type ScanState = "not-started" | "queued" | "running" | "complete" | "failed";
+export type RuntimeJobName = "daily-scan" | "github-reconcile" | "measurement";
+export interface RuntimeJobRecord { name: RuntimeJobName; status: "idle" | "running" | "succeeded" | "failed"; attempts: number; leaseOwner: string | null; leaseExpiresAt: string | null; lastStartedAt: string | null; lastCompletedAt: string | null; lastError: string | null; updatedAt: string; }
 export interface ConnectorRecord {
   organizationId: string; provider: ConnectorProvider; status: ConnectorStatus;
   externalAccountId: string | null; encryptedCredentials: string | null;
@@ -124,6 +126,13 @@ CREATE TABLE IF NOT EXISTS site_onboarding (
   FOREIGN KEY (site_id, organization_id) REFERENCES sites(id, organization_id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS site_onboarding_organization_idx ON site_onboarding(organization_id, updated_at DESC);
+CREATE TABLE IF NOT EXISTS runtime_jobs (
+  name text PRIMARY KEY CHECK (name IN ('daily-scan','github-reconcile','measurement')),
+  status text NOT NULL DEFAULT 'idle' CHECK (status IN ('idle','running','succeeded','failed')),
+  attempts integer NOT NULL DEFAULT 0, lease_owner text, lease_expires_at timestamptz,
+  last_started_at timestamptz, last_completed_at timestamptz, last_error text,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
 `;
 
 function iso(value: Date | string): string { return new Date(value).toISOString(); }
@@ -334,6 +343,33 @@ export class PostgresTenantStore {
       githubBranch: row.github_branch, gscProperty: row.gsc_property, posthogProjectId: row.posthog_project_id,
       protectedPaths: row.protected_paths ?? [], scanState: row.scan_state, scanRunId: row.scan_run_id,
       errorCode: row.error_code, errorMessage: row.error_message, updatedAt: iso(row.updated_at) };
+  }
+}
+
+/** Database-backed singleton leases make serverless cron invocations idempotent and observable. */
+export class PostgresRuntimeJobStore {
+  constructor(private readonly database: Queryable) {}
+  async acquire(name: RuntimeJobName, owner: string, leaseSeconds = 300, now = new Date()): Promise<boolean> {
+    const result = await this.database.query(
+      `INSERT INTO runtime_jobs(name,status,attempts,lease_owner,lease_expires_at,last_started_at)
+       VALUES($1,'running',1,$2,$3,$4)
+       ON CONFLICT(name) DO UPDATE SET status='running',attempts=runtime_jobs.attempts+1,
+       lease_owner=EXCLUDED.lease_owner,lease_expires_at=EXCLUDED.lease_expires_at,
+       last_started_at=EXCLUDED.last_started_at,last_error=NULL,updated_at=now()
+       WHERE runtime_jobs.status<>'running' OR runtime_jobs.lease_expires_at<=$4
+       RETURNING name`, [name, owner, new Date(now.getTime() + leaseSeconds * 1000).toISOString(), now.toISOString()]
+    );
+    return result.rowCount === 1;
+  }
+  async succeed(name: RuntimeJobName, owner: string, now = new Date()): Promise<void> {
+    await this.database.query(`UPDATE runtime_jobs SET status='succeeded',lease_owner=NULL,lease_expires_at=NULL,last_completed_at=$3,updated_at=now() WHERE name=$1 AND lease_owner=$2`, [name, owner, now.toISOString()]);
+  }
+  async fail(name: RuntimeJobName, owner: string, error: string): Promise<void> {
+    await this.database.query(`UPDATE runtime_jobs SET status='failed',lease_owner=NULL,lease_expires_at=NULL,last_error=$3,updated_at=now() WHERE name=$1 AND lease_owner=$2`, [name, owner, error.slice(0, 4000)]);
+  }
+  async list(): Promise<RuntimeJobRecord[]> {
+    const rows = await this.database.query<any>(`SELECT name,status,attempts,lease_owner,lease_expires_at,last_started_at,last_completed_at,last_error,updated_at FROM runtime_jobs ORDER BY name`);
+    return rows.rows.map((row) => ({ name: row.name, status: row.status, attempts: row.attempts, leaseOwner: row.lease_owner, leaseExpiresAt: row.lease_expires_at ? iso(row.lease_expires_at) : null, lastStartedAt: row.last_started_at ? iso(row.last_started_at) : null, lastCompletedAt: row.last_completed_at ? iso(row.last_completed_at) : null, lastError: row.last_error, updatedAt: iso(row.updated_at) }));
   }
 }
 
