@@ -48,7 +48,7 @@ export async function onboardingStatus(session: StoredSession, requestedSiteId?:
     github: { status: github?.status ?? "disconnected", repository: onboarding?.githubOwner && onboarding.githubRepository ? `${onboarding.githubOwner}/${onboarding.githubRepository}` : undefined, branch: onboarding?.githubBranch ?? "main", installUrl: process.env.GITHUB_APP_SLUG ? `https://github.com/apps/${process.env.GITHUB_APP_SLUG}/installations/new` : undefined, error: github?.errorMessage ?? undefined, action: github?.health.action },
     gsc: { status: gsc?.status ?? "disconnected", property: onboarding?.gscProperty ?? undefined, error: gsc?.errorMessage ?? undefined, action: gsc?.health.action },
     posthog: { status: posthog?.health.skipped ? "skipped" : posthog?.status ?? "disconnected", projectId: onboarding?.posthogProjectId ?? undefined, host: posthog?.health.host, error: posthog?.errorMessage ?? undefined, action: posthog?.health.action },
-    configuration: { branch: onboarding?.githubBranch ?? "main", protectedPaths: onboarding?.protectedPaths ?? ["app/api/**", "middleware.ts", "next.config.*"] },
+    configuration: { branch: onboarding?.githubBranch ?? "main", protectedPaths: onboarding?.protectedPaths?.length ? onboarding.protectedPaths : ["app/api/**", "middleware.ts", "next.config.*"], saved: onboarding ? ["scan", "complete"].includes(onboarding.state) : false },
     scan: { state: onboarding?.scanState ?? "not-started", runId: onboarding?.scanRunId ?? undefined, pages: latest?.pages.length, opportunities: latest?.opportunities.length, error: onboarding?.errorMessage ?? undefined },
     nextStep: onboarding?.state ?? "organization"
   };

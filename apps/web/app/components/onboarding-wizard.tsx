@@ -9,7 +9,7 @@ export interface OnboardingStatus {
   github?: { state: ConnectorState; repository?: string; installUrl?: string; message?: string } | null;
   gsc?: { state: ConnectorState; property?: string; message?: string } | null;
   posthog?: { state: ConnectorState; host?: string; message?: string } | null;
-  configuration?: { branch: string; protectedPaths: string[] } | null;
+  configuration?: { branch: string; protectedPaths: string[]; saved?: boolean } | null;
   scan?: { state: "idle" | "queued" | "running" | "complete" | "error"; pages?: number; opportunities?: number; message?: string } | null;
 }
 
@@ -21,7 +21,7 @@ export function completedSteps(status: OnboardingStatus): boolean[] {
     status.github?.state === "healthy",
     status.gsc?.state === "healthy",
     status.posthog?.state === "healthy" || status.posthog?.state === "skipped",
-    Boolean(status.configuration?.branch),
+    status.configuration?.saved === true,
     status.scan?.state === "complete",
     false,
   ];
