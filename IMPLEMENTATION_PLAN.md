@@ -221,7 +221,7 @@ handoff from the authenticated dashboard to the internal API. A dry-run-first
 pilot importer safely assigns legacy artifacts to an explicit organization and
 refuses cross-tenant reassignment.
 
-## Milestone 18 — Guided onboarding and connectors (pending)
+## Milestone 18 — Guided onboarding and connectors (in progress: product complete, provider authorization pending)
 
 - Create an organization and site through the dashboard.
 - Install and verify the GitHub App, then choose an allowed repository and branch.
@@ -231,6 +231,14 @@ refuses cross-tenant reassignment.
 
 Acceptance: a supported customer can reach a successful first scan without manual
 JSON editing or operator access to connector secrets.
+
+Implemented: an owner-only seven-step dashboard wizard now creates workspace/site
+records, verifies GitHub App repository and branch access, completes signed Google
+Search Console OAuth, optionally verifies or skips PostHog, stores encrypted
+credentials, saves protected paths, runs a read-only scan, and reports durable
+actionable health states. Production activation still requires the customer to
+authorize the selected repository in the GitHub App installation and allowlist the
+production Google OAuth callback in their provider consoles.
 
 ## Milestone 19 — Design-partner operations (pending)
 
