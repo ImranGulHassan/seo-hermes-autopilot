@@ -42,3 +42,32 @@ test("dashboard scopes runs and changes to an organization and validated site", 
   assert.deepEqual(calls, [{ kind: "runs", organizationId: "org_one", siteId: "site_two" }, { kind: "changes", organizationId: "org_one", siteId: "site_two" }]);
   assert.equal((await app.request("/v1/dashboard?siteId=unknown", { headers })).status, 404);
 });
+
+test("dashboard reports real GSC movement, low CTR, freshness and connector state", async () => {
+  const artifact = (runId: string, window: { startDate: string; endDate: string }, clicks: number, completedAt: string) => ({
+    schemaVersion: 1 as const, runId, startedAt: completedAt, completedAt, siteUrl: "https://one.example", dataState: "search-performance" as const, analyticsState: "not-configured" as const, metricWindow: window,
+    pages: [], errors: [], opportunities: [], queryMetrics: [{ query: "real query", impressions: 100, clicks, ctr: clicks / 100, position: 5 }],
+    metrics: [
+      { url: "https://one.example/winner", impressions: 100, clicks, ctr: clicks / 100, position: 5, conversions: 0, conversionValue: 0 },
+      { url: "https://one.example/low", impressions: 100, clicks: 0, ctr: 0, position: 8, conversions: 0, conversionValue: 0 }
+    ]
+  });
+  const runs = [artifact("run_new", { startDate: "2026-07-29", endDate: "2026-08-24" }, 20, new Date().toISOString()), artifact("run_old", { startDate: "2026-07-02", endDate: "2026-07-28" }, 10, "2026-07-29T00:00:00.000Z")];
+  const app = createApp({ stores: { changes: new InMemoryChangeLedger(), deliveries: new InMemoryWebhookDeliveryStore(), listSites: async () => [{ id: "site_one", url: "https://one.example", lastRunAt: null }], listChanges: async () => [], listOpportunities: async () => [], listRecentRuns: async () => runs, saveRun: async () => {} }, apiSecret: "api-secret", githubWebhookSecret: "hook-secret" });
+  const response = await app.request("/v1/dashboard", { headers: { authorization: "Bearer api-secret", "x-organization-id": "org_one" } });
+  const body = await response.json() as any;
+  assert.equal(body.performance.comparison.available, true);
+  assert.equal(body.performance.winningPages[0].clickDelta, 10);
+  assert.equal(body.performance.lowCtrPages[0].url, "https://one.example/low");
+  assert.equal(body.connectors.searchConsole.state, "healthy");
+  assert.equal(body.connectors.conversions.state, "not-configured");
+  assert.equal(body.freshness.state, "fresh");
+});
+
+test("pilot readiness requires five partners and three active converted users", async () => {
+  const partners = Array.from({ length: 5 }, (_, index) => ({ id: `p${index}`, status: "active", convertedAt: index < 3 ? "2026-08-24T00:00:00.000Z" : null, conversionIntent: index < 3 ? "yes" : "unknown", weeklyFeedback: [{ activeUse: index < 3 }] }));
+  const app = createApp({ stores: { changes: new InMemoryChangeLedger(), deliveries: new InMemoryWebhookDeliveryStore(), listSites: async () => [], listChanges: async () => [], listOpportunities: async () => [], listRecentRuns: async () => [], saveRun: async () => {}, listDesignPartners: async () => partners }, apiSecret: "api-secret", githubWebhookSecret: "hook-secret" });
+  const response = await app.request("/v1/pilot-readiness", { headers: { authorization: "Bearer api-secret", "x-organization-id": "org_one" } });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).gates.launchReady, true);
+});

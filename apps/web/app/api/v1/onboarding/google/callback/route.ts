@@ -17,18 +17,15 @@ export async function GET(request: Request): Promise<Response> {
     const redirectUri = process.env.GOOGLE_REDIRECT_URI ?? `${url.origin}/api/v1/onboarding/google/callback`;
     const tokens = await exchangeGoogleOAuthCode({ clientId, clientSecret, code, redirectUri });
     const runtime = await onboardingRuntime(), properties = await listSearchConsoleProperties({ accessToken: tokens.access_token });
-    const site = (await runtime.tenants.listSites(session.organizationId))[0];
-    if (!site) throw new Error("Create a site before connecting Search Console.");
-    const hostname = new URL(site.url).hostname.replace(/^www\./, "");
-    const property = properties.find((item) => item.siteUrl === `sc-domain:${hostname}`)
-      ?? properties.find((item) => item.siteUrl.startsWith(site.url)) ?? properties[0];
-    if (!property) throw new Error("No Search Console properties are accessible to this Google account.");
+    const siteId = new URL(state.returnTo, url.origin).searchParams.get("siteId");
+    const site = siteId ? await runtime.tenants.getSite(session.organizationId, siteId) : undefined;
+    if (!site) throw new Error("The selected site is missing or no longer accessible.");
+    if (!properties.length) throw new Error("No Search Console properties are accessible to this Google account.");
     const existing = await runtime.tenants.getConnector(session.organizationId, "google-search-console");
     if (!tokens.refresh_token && !existing?.encryptedCredentials) throw new Error("Google did not return offline access. Revoke the app grant and reconnect to issue a refresh token.");
     await runtime.tenants.upsertConnector({ organizationId: session.organizationId, provider: "google-search-console", status: "connected", externalAccountId: session.email,
       ...(tokens.refresh_token ? { encryptedCredentials: encryptCredential(JSON.stringify({ refreshToken: tokens.refresh_token })) } : {}),
-      health: { properties: properties.map((item) => ({ siteUrl: item.siteUrl, permissionLevel: item.permissionLevel })), selectedProperty: property.siteUrl } });
-    await runtime.tenants.upsertSiteOnboarding({ organizationId: session.organizationId, siteId: site.id, state: "analytics", gscProperty: property.siteUrl });
+      health: { properties: properties.map((item) => ({ siteUrl: item.siteUrl, permissionLevel: item.permissionLevel })) } });
     return NextResponse.redirect(new URL(state.returnTo, request.url));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Google OAuth failed.";

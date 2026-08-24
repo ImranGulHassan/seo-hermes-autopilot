@@ -192,7 +192,7 @@ baselines and measurement history never depend on a mutable opportunity row.
 
 WordPress, outreach, rank tracking, GEO, autonomous publishing, white-label agency features, and full SEO experimentation remain outside these milestones.
 
-## Milestone 16 — Permanent Vercel runtime (in progress)
+## Milestone 16 — Permanent Vercel runtime (complete)
 
 - Deploy the Next.js dashboard and API as one Vercel project.
 - Replace the local PostgreSQL proxy with managed serverless PostgreSQL.
@@ -221,7 +221,7 @@ handoff from the authenticated dashboard to the internal API. A dry-run-first
 pilot importer safely assigns legacy artifacts to an explicit organization and
 refuses cross-tenant reassignment.
 
-## Milestone 18 — Guided onboarding and connectors (in progress: product complete, provider authorization pending)
+## Milestone 18 — Guided onboarding and connectors (complete)
 
 - Create an organization and site through the dashboard.
 - Install and verify the GitHub App, then choose an allowed repository and branch.
@@ -236,11 +236,11 @@ Implemented: an owner-only seven-step dashboard wizard now creates workspace/sit
 records, verifies GitHub App repository and branch access, completes signed Google
 Search Console OAuth, optionally verifies or skips PostHog, stores encrypted
 credentials, saves protected paths, runs a read-only scan, and reports durable
-actionable health states. Production activation still requires the customer to
-authorize the selected repository in the GitHub App installation and allowlist the
-production Google OAuth callback in their provider consoles.
+actionable health states. Production now requires explicit tenant-validated site,
+repository, branch, and Search Console property selections and supports independent
+onboarding for each site.
 
-## Milestone 19 — Design-partner operations (pending)
+## Milestone 19 — Design-partner operations (product complete; external recruitment pending)
 
 - Track partner start, weekly feedback, active-use, publication permission, and
   conversion intent.
@@ -251,7 +251,12 @@ production Google OAuth callback in their provider consoles.
 Acceptance: five partners can run for eight weeks with failures visible and
 recoverable without database or filesystem intervention.
 
-## Milestone 20 — Outcome validation (pending)
+Implemented: an owner-only operations dashboard creates eight-week pilot records,
+captures publication permission and weekly active-use feedback, exposes tenant-
+scoped controls and audit history, and keeps persisted launch-readiness gates.
+Actual external partner recruitment remains a human business-development action.
+
+## Milestone 20 — Outcome validation (product complete; observation windows pending)
 
 - Preserve and display recrawl, day-28, and day-56 states per deployed change.
 - Keep results observational and expose confounded/inconclusive explanations.
@@ -260,6 +265,11 @@ recoverable without database or filesystem intervention.
 
 Acceptance: five-partner evidence—not operator judgment—determines whether launch
 criteria have been reached.
+
+Implemented: authenticated scheduled measurement waits for confirmed Google
+recrawl, evaluates day-28 and day-56 windows, persists observational outcomes and
+explanations, and displays completed and pending states. Calendar time and deployed
+partner changes are still required to produce real outcomes.
 
 ## Milestone 21 — Billing and legal launch surface (pending)
 

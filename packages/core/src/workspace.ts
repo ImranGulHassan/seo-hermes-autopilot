@@ -65,6 +65,14 @@ export interface ScanArtifact {
   metrics: import("./types.js").SearchMetric[];
   queryMetrics?: import("./types.js").SearchQueryMetric[];
   sitemapUrls?: string[];
+  detectorDiagnostics?: Array<{
+    type: import("./types.js").DetectorType;
+    candidates: number;
+    eligible: number;
+    opportunities: number;
+    status: "issues-found" | "no-issues";
+    note: string;
+  }>;
   errors: Array<{ source: "crawler" | "gsc" | "posthog" | "repository"; message: string; url?: string }>;
   opportunities: import("./types.js").Opportunity[];
 }

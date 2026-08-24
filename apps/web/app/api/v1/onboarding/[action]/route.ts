@@ -17,6 +17,7 @@ export async function POST(request: Request, context: { params: Promise<{ action
   const runtime = await onboardingRuntime();
   try {
     const body = await request.json() as Record<string, unknown>;
+    let responseSiteId = typeof body.siteId === "string" ? body.siteId : undefined;
     if (action === "organization") {
       const name = text(body.name, "Organization name");
       const slug = optionalText(body.slug)?.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/^-+|-+$/g, "") || null;
@@ -31,6 +32,7 @@ export async function POST(request: Request, context: { params: Promise<{ action
       const url = new URL(text(body.url, "Production URL"));
       if (!['http:', 'https:'].includes(url.protocol)) throw new Error("Production URL must use HTTP or HTTPS.");
       const site = await runtime.tenants.createSite({ organizationId: session.organizationId, url: url.origin });
+      responseSiteId = site.id;
       await runtime.tenants.upsertSiteOnboarding({ organizationId: session.organizationId, siteId: site.id, state: "github" });
     } else if (action === "github") {
       const [owner, repository, extra] = text(body.repository, "GitHub repository").split("/");
@@ -38,13 +40,21 @@ export async function POST(request: Request, context: { params: Promise<{ action
       const installationId = optionalText(body.installationId) ?? process.env.GITHUB_INSTALLATION_ID;
       const appId = process.env.GITHUB_APP_ID, privateKey = process.env.GITHUB_PRIVATE_KEY?.replace(/\\n/g, "\n");
       if (!installationId || !appId || !privateKey) throw new Error("GitHub App server credentials are not configured. Install the app and configure its App ID, installation ID, and private key.");
-      const site = await selectedSite(runtime, session.organizationId);
-      const existing = await runtime.tenants.getSiteOnboarding(session.organizationId, site.id);
-      const verified = await verifyGitHubRepository({ installationId, owner, repository, branch: existing?.githubBranch, tokenProvider: new GitHubAppAuthenticator({ appId, installationId, privateKey }) });
+      const site = await selectedSite(runtime, session.organizationId, body.siteId);
+      const branch = text(body.branch, "Repository branch");
+      const verified = await verifyGitHubRepository({ installationId, owner, repository, branch, tokenProvider: new GitHubAppAuthenticator({ appId, installationId, privateKey }) });
       await runtime.tenants.upsertConnector({ organizationId: session.organizationId, provider: "github", status: "connected", externalAccountId: String(verified.installationId), health: { account: verified.installationAccount, canPull: verified.canPull, canPush: verified.canPush, branchProtected: verified.branchProtected } });
       await runtime.tenants.upsertSiteOnboarding({ organizationId: session.organizationId, siteId: site.id, state: "search-console", githubInstallationId: String(verified.installationId), githubOwner: owner, githubRepository: repository, githubBranch: verified.branch });
+    } else if (action === "gsc-property") {
+      const site = await selectedSite(runtime, session.organizationId, body.siteId);
+      await requireConnected(runtime, session.organizationId, "google-search-console", "Connect Google Search Console before selecting a property.");
+      const property = text(body.property, "Search Console property");
+      const google = await runtime.tenants.getConnector(session.organizationId, "google-search-console");
+      const properties = Array.isArray(google?.health.properties) ? google.health.properties as Array<{ siteUrl?: unknown }> : [];
+      if (!properties.some((item) => item.siteUrl === property)) throw new Error("Select a Search Console property available to the connected Google account.");
+      await runtime.tenants.upsertSiteOnboarding({ organizationId: session.organizationId, siteId: site.id, state: "analytics", gscProperty: property });
     } else if (action === "posthog") {
-      const site = await selectedSite(runtime, session.organizationId);
+      const site = await selectedSite(runtime, session.organizationId, body.siteId);
       await requireConnected(runtime, session.organizationId, "google-search-console", "Connect Google Search Console before configuring conversions.");
       if (body.skip === true) {
         await runtime.tenants.upsertConnector({ organizationId: session.organizationId, provider: "posthog", status: "disconnected", health: { skipped: true } });
@@ -57,7 +67,7 @@ export async function POST(request: Request, context: { params: Promise<{ action
         await runtime.tenants.upsertSiteOnboarding({ organizationId: session.organizationId, siteId: site.id, state: "configuration", posthogProjectId: projectId });
       }
     } else if (action === "configuration") {
-      const site = await selectedSite(runtime, session.organizationId), branch = text(body.branch, "Repository branch");
+      const site = await selectedSite(runtime, session.organizationId, body.siteId), branch = text(body.branch, "Repository branch");
       await requireConnected(runtime, session.organizationId, "github", "Connect and verify GitHub before saving repository safety rules.");
       await requireConnected(runtime, session.organizationId, "google-search-console", "Connect Google Search Console before saving repository safety rules.");
       const analytics = await runtime.tenants.getConnector(session.organizationId, "posthog");
@@ -66,7 +76,7 @@ export async function POST(request: Request, context: { params: Promise<{ action
       if (protectedPaths.length > 100 || protectedPaths.some((item) => item.startsWith("/") || item.includes("..") || item.length > 200)) throw new Error("Protected paths must be repository-relative patterns without '..'.");
       await runtime.tenants.upsertSiteOnboarding({ organizationId: session.organizationId, siteId: site.id, state: "scan", githubBranch: branch, protectedPaths });
     } else if (action === "scan") {
-      const site = await selectedSite(runtime, session.organizationId);
+      const site = await selectedSite(runtime, session.organizationId, body.siteId);
       const configured = await runtime.tenants.getSiteOnboarding(session.organizationId, site.id);
       if (configured?.state !== "scan" && configured?.state !== "complete") throw new Error("Complete connectors and repository safety rules before starting the first scan.");
       await runtime.tenants.upsertSiteOnboarding({ organizationId: session.organizationId, siteId: site.id, scanState: "running", errorCode: null, errorMessage: null });
@@ -78,7 +88,7 @@ export async function POST(request: Request, context: { params: Promise<{ action
         throw error;
       }
     } else return NextResponse.json({ error: "Unknown onboarding action." }, { status: 404 });
-    return Response.json(await onboardingStatus(session));
+    return Response.json(await onboardingStatus(session, responseSiteId));
   } catch (error) {
     const provider = action === "github" ? "github" : action === "posthog" ? "posthog" : undefined;
     if (provider) await runtime.tenants.upsertConnector({ organizationId: session.organizationId, provider, status: "error", errorCode: error instanceof ConnectorError ? error.code : "invalid-config", errorMessage: error instanceof Error ? error.message : "Connector verification failed.", health: { action: error instanceof ConnectorError ? error.action : "Review the connector settings and retry." } });
@@ -86,10 +96,11 @@ export async function POST(request: Request, context: { params: Promise<{ action
   }
 }
 
-async function selectedSite(runtime: Awaited<ReturnType<typeof onboardingRuntime>>, organizationId: string) {
-  const sites = await runtime.tenants.listSites(organizationId);
-  if (!sites[0]) throw new Error("Create a site before configuring connectors.");
-  return sites[0];
+async function selectedSite(runtime: Awaited<ReturnType<typeof onboardingRuntime>>, organizationId: string, value: unknown) {
+  const siteId = text(value, "Site");
+  const site = await runtime.tenants.getSite(organizationId, siteId);
+  if (!site) throw new Error("Select a site in this organization before configuring connectors.");
+  return site;
 }
 
 async function requireConnected(runtime: Awaited<ReturnType<typeof onboardingRuntime>>, organizationId: string, provider: "github" | "google-search-console", message: string) {

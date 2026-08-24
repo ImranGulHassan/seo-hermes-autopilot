@@ -20,6 +20,8 @@ export type ConnectorProvider = "github" | "google-search-console" | "posthog";
 export type ConnectorStatus = "disconnected" | "pending" | "connected" | "error";
 export type OnboardingState = "site" | "github" | "search-console" | "analytics" | "configuration" | "scan" | "complete";
 export type ScanState = "not-started" | "queued" | "running" | "complete" | "failed";
+export type RuntimeJobName = "daily-scan" | "github-reconcile" | "measurement";
+export interface RuntimeJobRecord { name: RuntimeJobName; status: "idle" | "running" | "succeeded" | "failed"; attempts: number; leaseOwner: string | null; leaseExpiresAt: string | null; lastStartedAt: string | null; lastCompletedAt: string | null; lastError: string | null; updatedAt: string; }
 export interface ConnectorRecord {
   organizationId: string; provider: ConnectorProvider; status: ConnectorStatus;
   externalAccountId: string | null; encryptedCredentials: string | null;
@@ -30,6 +32,14 @@ export interface SiteOnboardingRecord {
   githubInstallationId: string | null; githubOwner: string | null; githubRepository: string | null; githubBranch: string;
   gscProperty: string | null; posthogProjectId: string | null; protectedPaths: string[];
   scanState: ScanState; scanRunId: string | null; errorCode: string | null; errorMessage: string | null; updatedAt: string;
+}
+export type PartnerStatus = "invited" | "active" | "suspended" | "completed";
+export interface DesignPartnerRecord {
+  id: string; organizationId: string; siteId: string | null; name: string; contactEmail: string;
+  status: PartnerStatus; startedAt: string | null; pilotEndsAt: string | null;
+  publicationPermission: boolean; conversionIntent: "unknown" | "yes" | "no"; convertedAt: string | null;
+  weeklyFeedback: Array<{ week: string; note: string; activeUse: boolean; recordedAt: string }>;
+  createdAt: string; updatedAt: string;
 }
 
 export async function migrate(database: Queryable): Promise<void> {
@@ -124,6 +134,29 @@ CREATE TABLE IF NOT EXISTS site_onboarding (
   FOREIGN KEY (site_id, organization_id) REFERENCES sites(id, organization_id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS site_onboarding_organization_idx ON site_onboarding(organization_id, updated_at DESC);
+CREATE TABLE IF NOT EXISTS runtime_jobs (
+  name text PRIMARY KEY CHECK (name IN ('daily-scan','github-reconcile','measurement')),
+  status text NOT NULL DEFAULT 'idle' CHECK (status IN ('idle','running','succeeded','failed')),
+  attempts integer NOT NULL DEFAULT 0, lease_owner text, lease_expires_at timestamptz,
+  last_started_at timestamptz, last_completed_at timestamptz, last_error text,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS design_partners (
+  id text PRIMARY KEY, organization_id text NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  site_id text REFERENCES sites(id) ON DELETE SET NULL, name text NOT NULL, contact_email text NOT NULL,
+  status text NOT NULL DEFAULT 'invited' CHECK (status IN ('invited','active','suspended','completed')),
+  started_at timestamptz, pilot_ends_at timestamptz, publication_permission boolean NOT NULL DEFAULT false,
+  conversion_intent text NOT NULL DEFAULT 'unknown' CHECK (conversion_intent IN ('unknown','yes','no')),
+  converted_at timestamptz, weekly_feedback jsonb NOT NULL DEFAULT '[]'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS design_partners_org_status_idx ON design_partners(organization_id,status,updated_at DESC);
+CREATE TABLE IF NOT EXISTS operations_audit (
+  id bigserial PRIMARY KEY, organization_id text NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  actor_user_id text REFERENCES users(id) ON DELETE SET NULL, action text NOT NULL, subject_type text NOT NULL,
+  subject_id text NOT NULL, details jsonb NOT NULL DEFAULT '{}'::jsonb, created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS operations_audit_org_created_idx ON operations_audit(organization_id,created_at DESC);
 `;
 
 function iso(value: Date | string): string { return new Date(value).toISOString(); }
@@ -334,6 +367,78 @@ export class PostgresTenantStore {
       githubBranch: row.github_branch, gscProperty: row.gsc_property, posthogProjectId: row.posthog_project_id,
       protectedPaths: row.protected_paths ?? [], scanState: row.scan_state, scanRunId: row.scan_run_id,
       errorCode: row.error_code, errorMessage: row.error_message, updatedAt: iso(row.updated_at) };
+  }
+}
+
+/** Database-backed singleton leases make serverless cron invocations idempotent and observable. */
+export class PostgresDesignPartnerStore {
+  constructor(private readonly database: Queryable) {}
+
+  async list(organizationId: string): Promise<DesignPartnerRecord[]> {
+    const result = await this.database.query<any>(`SELECT * FROM design_partners WHERE organization_id=$1 ORDER BY created_at DESC`, [organizationId]);
+    return result.rows.map(partnerRecord);
+  }
+
+  async upsert(input: { id: string; organizationId: string; siteId?: string | null; name: string; contactEmail: string; status?: PartnerStatus; publicationPermission?: boolean; conversionIntent?: "unknown" | "yes" | "no"; startedAt?: string | null; pilotEndsAt?: string | null; convertedAt?: string | null }): Promise<DesignPartnerRecord> {
+    const row = (await this.database.query<any>(`INSERT INTO design_partners(id,organization_id,site_id,name,contact_email,status,started_at,pilot_ends_at,publication_permission,conversion_intent,converted_at)
+      SELECT $1,$2,$3,$4,lower($5),COALESCE($6,'invited'),$7,$8,COALESCE($9,false),COALESCE($10,'unknown'),$11
+      WHERE $3 IS NULL OR EXISTS (SELECT 1 FROM sites WHERE id=$3 AND organization_id=$2)
+      ON CONFLICT(id) DO UPDATE SET site_id=EXCLUDED.site_id,name=EXCLUDED.name,contact_email=EXCLUDED.contact_email,status=EXCLUDED.status,
+      started_at=COALESCE(EXCLUDED.started_at,design_partners.started_at),pilot_ends_at=COALESCE(EXCLUDED.pilot_ends_at,design_partners.pilot_ends_at),
+      publication_permission=EXCLUDED.publication_permission,conversion_intent=EXCLUDED.conversion_intent,converted_at=EXCLUDED.converted_at,updated_at=now()
+      WHERE design_partners.organization_id=EXCLUDED.organization_id RETURNING *`, [input.id,input.organizationId,input.siteId ?? null,input.name,input.contactEmail,input.status ?? null,input.startedAt ?? null,input.pilotEndsAt ?? null,input.publicationPermission ?? false,input.conversionIntent ?? "unknown",input.convertedAt ?? null])).rows[0];
+    if (!row) throw new Error("Partner site is not in the organization");
+    return partnerRecord(row);
+  }
+
+  async recordFeedback(input: { organizationId: string; partnerId: string; week: string; note: string; activeUse: boolean; actorUserId: string | null; recordedAt?: string }): Promise<DesignPartnerRecord> {
+    const entry = { week: input.week, note: input.note, activeUse: input.activeUse, recordedAt: input.recordedAt ?? new Date().toISOString() };
+    const row = (await this.database.query<any>(`UPDATE design_partners SET weekly_feedback=weekly_feedback || $3::jsonb,updated_at=now() WHERE id=$1 AND organization_id=$2 RETURNING *`, [input.partnerId,input.organizationId,JSON.stringify([entry])])).rows[0];
+    if (!row) throw new Error("Partner not found");
+    await this.audit(input.organizationId,input.actorUserId,"partner.feedback-recorded","design-partner",input.partnerId,{ week: input.week, activeUse: input.activeUse });
+    return partnerRecord(row);
+  }
+
+  async audit(organizationId: string, actorUserId: string | null, action: string, subjectType: string, subjectId: string, details: Record<string, unknown> = {}): Promise<void> {
+    await this.database.query(`INSERT INTO operations_audit(organization_id,actor_user_id,action,subject_type,subject_id,details) VALUES($1,$2,$3,$4,$5,$6::jsonb)`, [organizationId,actorUserId,action,subjectType,subjectId,JSON.stringify(details)]);
+  }
+
+  async listAudit(organizationId: string, limit = 100): Promise<Array<{ action: string; subjectType: string; subjectId: string; details: Record<string, unknown>; createdAt: string }>> {
+    const result = await this.database.query<any>(`SELECT action,subject_type,subject_id,details,created_at FROM operations_audit WHERE organization_id=$1 ORDER BY created_at DESC LIMIT $2`, [organizationId,Math.max(1,Math.min(limit,500))]);
+    return result.rows.map((row) => ({ action: row.action, subjectType: row.subject_type, subjectId: row.subject_id, details: row.details, createdAt: iso(row.created_at) }));
+  }
+}
+
+function partnerRecord(row: any): DesignPartnerRecord {
+  return { id: row.id, organizationId: row.organization_id, siteId: row.site_id, name: row.name, contactEmail: row.contact_email, status: row.status,
+    startedAt: row.started_at ? iso(row.started_at) : null, pilotEndsAt: row.pilot_ends_at ? iso(row.pilot_ends_at) : null,
+    publicationPermission: row.publication_permission, conversionIntent: row.conversion_intent, convertedAt: row.converted_at ? iso(row.converted_at) : null,
+    weeklyFeedback: row.weekly_feedback ?? [], createdAt: iso(row.created_at), updatedAt: iso(row.updated_at) };
+}
+
+export class PostgresRuntimeJobStore {
+  constructor(private readonly database: Queryable) {}
+  async acquire(name: RuntimeJobName, owner: string, leaseSeconds = 300, now = new Date()): Promise<boolean> {
+    const result = await this.database.query(
+      `INSERT INTO runtime_jobs(name,status,attempts,lease_owner,lease_expires_at,last_started_at)
+       VALUES($1,'running',1,$2,$3,$4)
+       ON CONFLICT(name) DO UPDATE SET status='running',attempts=runtime_jobs.attempts+1,
+       lease_owner=EXCLUDED.lease_owner,lease_expires_at=EXCLUDED.lease_expires_at,
+       last_started_at=EXCLUDED.last_started_at,last_error=NULL,updated_at=now()
+       WHERE runtime_jobs.status<>'running' OR runtime_jobs.lease_expires_at<=$4
+       RETURNING name`, [name, owner, new Date(now.getTime() + leaseSeconds * 1000).toISOString(), now.toISOString()]
+    );
+    return result.rowCount === 1;
+  }
+  async succeed(name: RuntimeJobName, owner: string, now = new Date()): Promise<void> {
+    await this.database.query(`UPDATE runtime_jobs SET status='succeeded',lease_owner=NULL,lease_expires_at=NULL,last_completed_at=$3,updated_at=now() WHERE name=$1 AND lease_owner=$2`, [name, owner, now.toISOString()]);
+  }
+  async fail(name: RuntimeJobName, owner: string, error: string): Promise<void> {
+    await this.database.query(`UPDATE runtime_jobs SET status='failed',lease_owner=NULL,lease_expires_at=NULL,last_error=$3,updated_at=now() WHERE name=$1 AND lease_owner=$2`, [name, owner, error.slice(0, 4000)]);
+  }
+  async list(): Promise<RuntimeJobRecord[]> {
+    const rows = await this.database.query<any>(`SELECT name,status,attempts,lease_owner,lease_expires_at,last_started_at,last_completed_at,last_error,updated_at FROM runtime_jobs ORDER BY name`);
+    return rows.rows.map((row) => ({ name: row.name, status: row.status, attempts: row.attempts, leaseOwner: row.lease_owner, leaseExpiresAt: row.lease_expires_at ? iso(row.lease_expires_at) : null, lastStartedAt: row.last_started_at ? iso(row.last_started_at) : null, lastCompletedAt: row.last_completed_at ? iso(row.last_completed_at) : null, lastError: row.last_error, updatedAt: iso(row.updated_at) }));
   }
 }
 

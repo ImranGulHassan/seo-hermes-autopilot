@@ -3,9 +3,11 @@ import {
   createPool,
   migrate,
   PostgresChangeLedger,
+  PostgresDesignPartnerStore,
   PostgresRunStore,
   PostgresWebhookDeliveryStore,
 } from "@seo-autopilot/database";
+import { randomBytes } from "node:crypto";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -22,6 +24,7 @@ function createRuntime() {
   const pool = createPool({ connectionString: databaseUrl, max: 3 });
   const changes = new PostgresChangeLedger(pool);
   const runs = new PostgresRunStore(pool);
+  const partners = new PostgresDesignPartnerStore(pool);
   return {
     ready: migrate(pool),
     app: createApp({
@@ -33,6 +36,10 @@ function createRuntime() {
         listOpportunities: (org, siteId) => runs.listOpportunities(org, siteId),
         listRecentRuns: (org, limit, siteId) => runs.listRecent(org, limit, siteId),
         saveRun: (org, artifact) => runs.save(artifact, org),
+        listDesignPartners: (org) => partners.list(org),
+        saveDesignPartner: (org, input) => partners.upsert({ ...input, id: input.id ?? `partner_${randomBytes(10).toString("hex")}`, organizationId: org }),
+        recordPartnerFeedback: (org, input) => partners.recordFeedback({ ...input, organizationId: org }),
+        listOperationsAudit: (org) => partners.listAudit(org),
       },
       apiSecret,
       githubWebhookSecret,

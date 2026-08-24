@@ -1,5 +1,16 @@
 import type { Detector, DetectorContext, Opportunity, PageSnapshot, SearchMetric } from "./types.js";
-import { median, stableId } from "./util.js";
+import { median, normalizeUrl, stableId } from "./util.js";
+
+function urlAliases(value: string): string[] {
+  try {
+    const normalized = normalizeUrl(value);
+    const parsed = new URL(normalized);
+    parsed.hostname = parsed.hostname.startsWith("www.") ? parsed.hostname.slice(4) : `www.${parsed.hostname}`;
+    return [normalized, normalizeUrl(parsed.toString())];
+  } catch {
+    return [value];
+  }
+}
 
 function opportunity(input: Omit<Opportunity, "id" | "fingerprint"> & { key: unknown[] }): Opportunity {
   const fingerprint = stableId([input.type, ...input.key]);
@@ -126,7 +137,7 @@ export const ctrAnomalyDetector: Detector = {
 export const indexabilityDetector: Detector = {
   type: "indexability-conflict",
   detect({ pages, sitemapUrls = [], metricsByUrl }) {
-    const sitemap = new Set(sitemapUrls);
+    const sitemap = new Set(sitemapUrls.flatMap(urlAliases));
     return pages.flatMap((page) => {
       const noindex = page.robots.some((directive) => directive.toLowerCase().includes("noindex"));
       const canonicalMismatch = page.status === 200 && page.canonical !== null && page.canonical !== page.url;
@@ -161,17 +172,56 @@ export const indexabilityDetector: Detector = {
 
 export const v1Detectors: Detector[] = [brokenLinkDetector, metadataDetector, underLinkedDetector, ctrAnomalyDetector, indexabilityDetector];
 
+export interface DetectorDiagnostic {
+  type: Detector["type"];
+  candidates: number;
+  eligible: number;
+  opportunities: number;
+  status: "issues-found" | "no-issues";
+  note: string;
+}
+
 export function createDetectorContext(input: DetectorContext extends never ? never : { pages: PageSnapshot[]; metrics: SearchMetric[]; sitemapUrls?: string[] }): DetectorContext {
-  const pagesByUrl = new Map(input.pages.map((page) => [page.url, page]));
-  const metricsByUrl = new Map(input.metrics.map((metric) => [metric.url, metric]));
+  const pagesByUrl = new Map<string, PageSnapshot>();
+  for (const page of input.pages) for (const alias of urlAliases(page.url)) pagesByUrl.set(alias, page);
+  const metricsByUrl = new Map<string, SearchMetric>();
+  for (const metric of input.metrics) for (const alias of urlAliases(metric.url)) metricsByUrl.set(alias, metric);
   const inboundLinkCounts = new Map<string, number>();
   for (const page of input.pages) {
-    for (const link of page.internalLinks) inboundLinkCounts.set(link.href, (inboundLinkCounts.get(link.href) ?? 0) + 1);
+    for (const link of page.internalLinks) for (const alias of urlAliases(link.href)) inboundLinkCounts.set(alias, (inboundLinkCounts.get(alias) ?? 0) + 1);
   }
-  return { ...input, pagesByUrl, metricsByUrl, inboundLinkCounts };
+  const pages = input.pages.map((page) => ({ ...page, url: normalizeUrl(page.url) }));
+  const sitemapUrls = input.sitemapUrls?.map(normalizeUrl);
+  return { ...input, pages, ...(sitemapUrls ? { sitemapUrls } : {}), pagesByUrl, metricsByUrl, inboundLinkCounts };
 }
 
 export function runDetectors(input: { pages: PageSnapshot[]; metrics: SearchMetric[]; sitemapUrls?: string[] }): Opportunity[] {
+  return analyzeDetectors(input).opportunities;
+}
+
+export function analyzeDetectors(input: { pages: PageSnapshot[]; metrics: SearchMetric[]; sitemapUrls?: string[] }): { opportunities: Opportunity[]; diagnostics: DetectorDiagnostic[] } {
   const context = createDetectorContext(input);
-  return v1Detectors.flatMap((detector) => detector.detect(context)).sort((a, b) => b.estimatedValue - a.estimatedValue);
+  const byDetector = v1Detectors.map((detector) => ({ detector, opportunities: detector.detect(context) }));
+  const diagnostics = byDetector.map(({ detector, opportunities }): DetectorDiagnostic => {
+    const eligible = detector.type === "broken-link"
+      ? context.pages.reduce((count, page) => count + page.internalLinks.filter((link) => link.status !== undefined).length, 0)
+      : detector.type === "metadata"
+        ? context.pages.filter((page) => page.indexable).length
+        : detector.type === "under-linked"
+          ? context.pages.filter((page) => page.indexable && (context.metricsByUrl.get(page.url)?.impressions ?? 0) >= 100).length
+          : detector.type === "ctr-anomaly"
+            ? context.metrics.filter((metric) => metric.impressions >= 500).length
+            : context.pages.length;
+    const candidates = detector.type === "broken-link"
+      ? context.pages.reduce((count, page) => count + page.internalLinks.length, 0)
+      : detector.type === "ctr-anomaly" ? context.metrics.length : context.pages.length;
+    return {
+      type: detector.type, candidates, eligible, opportunities: opportunities.length,
+      status: opportunities.length ? "issues-found" : "no-issues",
+      note: opportunities.length
+        ? `${opportunities.length} evidence-backed ${opportunities.length === 1 ? "issue" : "issues"} met this detector's threshold.`
+        : eligible ? `Checked ${eligible} eligible ${eligible === 1 ? "candidate" : "candidates"}; none met the issue threshold.` : "No candidates had enough evidence to evaluate this detector."
+    };
+  });
+  return { opportunities: byDetector.flatMap((item) => item.opportunities).sort((a, b) => b.estimatedValue - a.estimatedValue), diagnostics };
 }
