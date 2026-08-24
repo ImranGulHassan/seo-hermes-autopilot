@@ -59,6 +59,9 @@ test("migration permits analytics-enriched scan artifacts", async () => {
   assert.match(sql, /CREATE TABLE IF NOT EXISTS auth_sessions/);
   assert.match(sql, /CREATE TABLE IF NOT EXISTS login_tokens/);
   assert.match(sql, /ALTER TABLE sites ADD COLUMN IF NOT EXISTS organization_id/);
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS organization_connectors/);
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS site_onboarding/);
+  assert.match(sql, /FOREIGN KEY \(site_id, organization_id\) REFERENCES sites\(id, organization_id\)/);
 });
 
 test("tenant site reads always include the organization boundary", async () => {
@@ -121,4 +124,59 @@ test("organization creation grants the requested user owner membership", async (
   assert.equal(organization.id, "org_1");
   assert.match(calls[1]!.sql, /INSERT INTO memberships/);
   assert.deepEqual(calls[1]!.values, ["org_1", "user_1", "owner"]);
+});
+
+test("connector reads and writes are always organization scoped", async () => {
+  const calls: Array<{ sql: string; values?: unknown[] }> = [];
+  const database: Queryable = { query: async (sql, values) => {
+    calls.push({ sql, ...(values ? { values } : {}) });
+    return { rows: sql.includes("RETURNING organization_id") ? [{
+      organization_id: "org_a", provider: "github", status: "connected", external_account_id: "installation_1",
+      encrypted_credentials: "sealed:v1:value", health: { verified: true }, error_code: null, error_message: null,
+      updated_at: "2026-08-24T00:00:00Z"
+    }] : [], rowCount: 1, command: "", oid: 0, fields: [] };
+  } };
+  const tenants = new PostgresTenantStore(database);
+  const saved = await tenants.upsertConnector({ organizationId: "org_a", provider: "github", status: "connected",
+    externalAccountId: "installation_1", encryptedCredentials: "sealed:v1:value", health: { verified: true } });
+  assert.equal(saved.organizationId, "org_a");
+  assert.equal(saved.encryptedCredentials, "sealed:v1:value");
+  await tenants.getConnector("org_b", "github");
+  await tenants.listConnectors("org_b");
+  assert.match(calls[0]!.sql, /WHERE EXISTS \(SELECT 1 FROM organizations WHERE id=\$1\)/);
+  assert.equal(calls[0]!.values?.[0], "org_a");
+  assert.deepEqual(calls[1]!.values, ["org_b", "github"]);
+  assert.match(calls[1]!.sql, /organization_id=\$1 AND provider=\$2/);
+  assert.deepEqual(calls[2]!.values, ["org_b"]);
+  assert.match(calls[2]!.sql, /WHERE organization_id=\$1/);
+});
+
+test("connector health updates preserve omitted encrypted credentials", async () => {
+  const calls: Array<{ sql: string; values?: unknown[] }> = [];
+  const database: Queryable = { query: async (sql, values) => {
+    calls.push({ sql, ...(values ? { values } : {}) });
+    return { rows: [{ organization_id: "org_a", provider: "posthog", status: "connected", external_account_id: null,
+      encrypted_credentials: "sealed", health: {}, error_code: null, error_message: null, updated_at: "2026-08-24" }],
+      rowCount: 1, command: "", oid: 0, fields: [] };
+  } };
+  await new PostgresTenantStore(database).upsertConnector({ organizationId: "org_a", provider: "posthog", status: "connected", health: {} });
+  assert.match(calls[0]!.sql, /CASE WHEN \$10 THEN EXCLUDED\.encrypted_credentials/);
+  assert.equal(calls[0]!.values?.[9], false);
+});
+
+test("onboarding records cannot be read or upserted across tenants", async () => {
+  const calls: Array<{ sql: string; values?: unknown[] }> = [];
+  const database: Queryable = { query: async (sql, values) => {
+    calls.push({ sql, ...(values ? { values } : {}) });
+    return { rows: [], rowCount: 0, command: "", oid: 0, fields: [] };
+  } };
+  const tenants = new PostgresTenantStore(database);
+  await assert.rejects(tenants.upsertSiteOnboarding({ organizationId: "org_b", siteId: "site_a", state: "github" }), /not found in organization/);
+  assert.equal(await tenants.getSiteOnboarding("org_b", "site_a"), undefined);
+  assert.deepEqual(await tenants.listSiteOnboarding("org_b"), []);
+  assert.match(calls[0]!.sql, /WHERE EXISTS \(SELECT 1 FROM sites WHERE id=\$2 AND organization_id=\$1\)/);
+  assert.match(calls[0]!.sql, /WHERE site_onboarding\.organization_id=EXCLUDED\.organization_id/);
+  assert.deepEqual(calls[1]!.values, ["org_b", "site_a"]);
+  assert.match(calls[1]!.sql, /organization_id=\$1 AND site_id=\$2/);
+  assert.deepEqual(calls[2]!.values, ["org_b"]);
 });

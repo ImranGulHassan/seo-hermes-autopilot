@@ -1,6 +1,26 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { GoogleOAuthTokenProvider, GoogleSearchConsoleClient, completedSearchWindow } from "../src/index.js";
+import { ConnectorError, GoogleOAuthTokenProvider, GoogleSearchConsoleClient, completedSearchWindow, createGoogleOAuthState, exchangeGoogleOAuthCode, googleOAuthAuthorizationUrl, verifyGoogleOAuthState, verifySearchConsoleProperty } from "../src/index.js";
+
+test("signs OAuth state, builds the consent URL, and rejects expired state", () => {
+  const secret = "x".repeat(32);
+  const state = createGoogleOAuthState({ organizationId: "org_1", userId: "user_1", returnTo: "/onboarding?step=gsc", secret, now: new Date("2026-01-01T00:00:00Z"), nonce: "fixed-nonce" });
+  assert.equal(verifyGoogleOAuthState(state, secret, new Date("2026-01-01T00:05:00Z")).organizationId, "org_1");
+  const url = new URL(googleOAuthAuthorizationUrl({ clientId: "client", redirectUri: "https://app.test/oauth/callback", state }));
+  assert.equal(url.searchParams.get("access_type"), "offline");
+  assert.match(url.searchParams.get("scope") ?? "", /webmasters\.readonly/);
+  assert.throws(() => verifyGoogleOAuthState(state, secret, new Date("2026-01-01T00:11:00Z")), (error: unknown) => error instanceof ConnectorError && error.code === "expired-state");
+});
+
+test("exchanges an OAuth code and verifies the selected Search Console property", async () => {
+  const tokens = await exchangeGoogleOAuthCode({ clientId: "client", clientSecret: "secret", code: "code", redirectUri: "https://app.test/callback", fetch: async (_input, init) => {
+    assert.match(String(init?.body), /grant_type=authorization_code/);
+    return Response.json({ access_token: "access", refresh_token: "refresh", expires_in: 3600 });
+  } });
+  assert.equal(tokens.refresh_token, "refresh");
+  const property = await verifySearchConsoleProperty({ accessToken: tokens.access_token, propertyUrl: "sc-domain:example.com", fetch: async () => Response.json({ siteEntry: [{ siteUrl: "sc-domain:example.com", permissionLevel: "siteOwner" }] }) });
+  assert.equal(property.writable, true);
+});
 
 test("uses a completed 28-day window excluding the trailing three days", () => {
   assert.deepEqual(completedSearchWindow(new Date("2026-08-15T20:00:00Z")), { startDate: "2026-07-16", endDate: "2026-08-12" });
