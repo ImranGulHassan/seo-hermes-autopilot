@@ -191,3 +191,86 @@ baselines and measurement history never depend on a mutable opportunity row.
 - Continue only if at least three pilots actively use the workflow and will pay at least $99/month.
 
 WordPress, outreach, rank tracking, GEO, autonomous publishing, white-label agency features, and full SEO experimentation remain outside these milestones.
+
+## Milestone 16 — Permanent Vercel runtime (in progress)
+
+- Deploy the Next.js dashboard and API as one Vercel project.
+- Replace the local PostgreSQL proxy with managed serverless PostgreSQL.
+- Move secrets into scoped Vercel environment variables.
+- Replace systemd scheduling with authenticated Vercel cron entry points.
+- Retain the local runner only for repository validation workloads that exceed
+  serverless execution limits, with durable job leases and heartbeats.
+
+Acceptance: production does not depend on the operator workstation for web
+availability, durable state, scheduled reconciliation, or measurement.
+
+## Milestone 17 — Authentication and tenant isolation (complete)
+
+- Add users, organizations, memberships, sessions, and organization-owned sites.
+- Require an authenticated organization context for every product read and write.
+- Enforce role-based owner, approver, and viewer permissions.
+- Scope webhook, run, opportunity, change, billing, and audit records to a site and
+  organization without accepting tenant identifiers solely from the browser.
+
+Acceptance: cross-tenant access tests fail closed, session revocation is immediate,
+and the global API secret is no longer a customer authentication mechanism.
+
+Implemented with organization-scoped SQL reads and writes, one-use login tokens,
+revocable signed sessions, owner/approver/viewer roles, and a server-only tenant
+handoff from the authenticated dashboard to the internal API. A dry-run-first
+pilot importer safely assigns legacy artifacts to an explicit organization and
+refuses cross-tenant reassignment.
+
+## Milestone 18 — Guided onboarding and connectors (pending)
+
+- Create an organization and site through the dashboard.
+- Install and verify the GitHub App, then choose an allowed repository and branch.
+- Complete Google OAuth and choose a verified Search Console property.
+- Optionally connect PostHog and select conversion semantics.
+- Configure protected paths, validate the repository, and run an initial read-only scan.
+
+Acceptance: a supported customer can reach a successful first scan without manual
+JSON editing or operator access to connector secrets.
+
+## Milestone 19 — Design-partner operations (pending)
+
+- Track partner start, weekly feedback, active-use, publication permission, and
+  conversion intent.
+- Add two external partners to reach five approval-only pilots.
+- Provide admin retry, suspension, audit, and integration-health controls.
+- Deliver lifecycle and outcome notifications.
+
+Acceptance: five partners can run for eight weeks with failures visible and
+recoverable without database or filesystem intervention.
+
+## Milestone 20 — Outcome validation (pending)
+
+- Preserve and display recrawl, day-28, and day-56 states per deployed change.
+- Keep results observational and expose confounded/inconclusive explanations.
+- Evaluate the 40% acceptance and 5% correction/rollback gates only with sufficient
+  samples.
+
+Acceptance: five-partner evidence—not operator judgment—determines whether launch
+criteria have been reached.
+
+## Milestone 21 — Billing and legal launch surface (pending)
+
+- Add Stripe Starter, Growth, and Team subscriptions with explicit usage limits.
+- Add checkout, billing portal, webhook reconciliation, delinquency, and entitlement
+  enforcement.
+- Publish Terms, Privacy, subprocessors, security, deletion/export, and responsible
+  disclosure pages for SEO Autopilot.
+
+Acceptance: billing state is authoritative and auditable, cancellation does not
+destroy evidence, and no customer can exceed paid entitlements silently.
+
+## Milestone 22 — Paid launch gate (pending)
+
+- Require at least three of five design partners to remain active, merge multiple
+  PRs, and convert at $99/month or more.
+- Complete production restore, tenant-isolation, webhook replay, secret rotation,
+  accessibility, and incident-response checks.
+- Keep auto-merge disabled until the existing per-site trust threshold is met.
+
+Acceptance: public paid launch is enabled only when the persisted scorecard and
+partner records satisfy the documented continue criteria.

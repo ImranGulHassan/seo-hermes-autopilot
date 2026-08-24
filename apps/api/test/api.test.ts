@@ -9,10 +9,11 @@ test("health is public while product reads require API authentication", async ()
   const app = createApp({ stores: { changes: new InMemoryChangeLedger(), deliveries: new InMemoryWebhookDeliveryStore(), listSites: async () => [], listChanges: async () => [], listOpportunities: async () => [], listRecentRuns: async () => [], saveRun: async () => {} }, apiSecret: "api-secret", githubWebhookSecret: "hook-secret" });
   assert.equal((await app.request("/health")).status, 200);
   assert.equal((await app.request("/v1/changes")).status, 401);
-  const response = await app.request("/v1/changes", { headers: { authorization: "Bearer api-secret" } });
+  assert.equal((await app.request("/v1/changes", { headers: { authorization: "Bearer api-secret" } })).status, 400);
+  const response = await app.request("/v1/changes", { headers: { authorization: "Bearer api-secret", "x-organization-id": "org_one" } });
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { changes: [] });
-  const scorecard = await app.request("/v1/pilot-scorecard", { headers: { authorization: "Bearer api-secret" } });
+  const scorecard = await app.request("/v1/pilot-scorecard", { headers: { authorization: "Bearer api-secret", "x-organization-id": "org_one" } });
   assert.equal(scorecard.status, 200);
   assert.deepEqual((await scorecard.json()).scorecard.gates, { acceptance: "insufficient-data", rollback: "insufficient-data", paidConversion: "unavailable" });
 });
@@ -25,19 +26,19 @@ test("GitHub endpoint requires a valid raw-body signature", async () => {
   assert.equal((await app.request("/webhooks/github", { method: "POST", body, headers: { "x-github-event": "ping", "x-github-delivery": "two", "x-hub-signature-256": signature } })).status, 200);
 });
 
-test("dashboard scopes runs and changes to a validated site", async () => {
-  const calls: Array<{ kind: string; siteId?: string }> = [];
+test("dashboard scopes runs and changes to an organization and validated site", async () => {
+  const calls: Array<{ kind: string; organizationId: string; siteId?: string }> = [];
   const stores = {
     changes: new InMemoryChangeLedger(), deliveries: new InMemoryWebhookDeliveryStore(),
     listSites: async () => [{ id: "site_one", url: "https://one.example", lastRunAt: null }, { id: "site_two", url: "https://two.example", lastRunAt: null }],
-    listChanges: async (siteId?: string) => { calls.push({ kind: "changes", ...(siteId ? { siteId } : {}) }); return []; },
+    listChanges: async (organizationId: string, siteId?: string) => { calls.push({ kind: "changes", organizationId, ...(siteId ? { siteId } : {}) }); return []; },
     listOpportunities: async () => [],
-    listRecentRuns: async (_limit?: number, siteId?: string) => { calls.push({ kind: "runs", ...(siteId ? { siteId } : {}) }); return []; },
+    listRecentRuns: async (organizationId: string, _limit?: number, siteId?: string) => { calls.push({ kind: "runs", organizationId, ...(siteId ? { siteId } : {}) }); return []; },
     saveRun: async () => {}
   };
   const app = createApp({ stores, apiSecret: "api-secret", githubWebhookSecret: "hook-secret" });
-  const headers = { authorization: "Bearer api-secret" };
+  const headers = { authorization: "Bearer api-secret", "x-organization-id": "org_one" };
   assert.equal((await app.request("/v1/dashboard?siteId=site_two", { headers })).status, 200);
-  assert.deepEqual(calls, [{ kind: "runs", siteId: "site_two" }, { kind: "changes", siteId: "site_two" }]);
+  assert.deepEqual(calls, [{ kind: "runs", organizationId: "org_one", siteId: "site_two" }, { kind: "changes", organizationId: "org_one", siteId: "site_two" }]);
   assert.equal((await app.request("/v1/dashboard?siteId=unknown", { headers })).status, 404);
 });

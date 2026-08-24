@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { migrate, PostgresChangeLedger, PostgresRunStore, PostgresWebhookDeliveryStore, type Queryable } from "../src/index.js";
+import { migrate, PostgresChangeLedger, PostgresRunStore, PostgresTenantStore, PostgresWebhookDeliveryStore, type Queryable } from "../src/index.js";
 import type { ChangeRecord } from "@seo-autopilot/core";
 
 test("change ledger persists provider identifiers and serialized immutable baseline", async () => {
@@ -30,12 +30,12 @@ test("run and change reads are scoped by site when requested", async () => {
   const calls: Array<{ sql: string; values?: unknown[] }> = [];
   const database: Queryable = { query: async (sql, values) => { calls.push({ sql, ...(values ? { values } : {}) }); return { rows: [], rowCount: 0, command: "", oid: 0, fields: [] }; } };
   const store = new PostgresRunStore(database);
-  await store.listRecent(30, "site_two");
-  await store.listChanges("site_two");
-  assert.match(calls[0]!.sql, /WHERE site_id=\$1/);
-  assert.deepEqual(calls[0]!.values, ["site_two", 30]);
-  assert.match(calls[1]!.sql, /WHERE c\.site_id=\$1/);
-  assert.deepEqual(calls[1]!.values, ["site_two"]);
+  await store.listRecent("org_one", 30, "site_two");
+  await store.listChanges("org_one", "site_two");
+  assert.match(calls[0]!.sql, /s\.organization_id=\$1 AND r\.site_id=\$2/);
+  assert.deepEqual(calls[0]!.values, ["org_one", "site_two", 30]);
+  assert.match(calls[1]!.sql, /s\.organization_id=\$1 AND c\.site_id=\$2/);
+  assert.deepEqual(calls[1]!.values, ["org_one", "site_two"]);
 });
 
 test("webhook delivery writes are conflict-safe", async () => {
@@ -53,4 +53,72 @@ test("migration permits analytics-enriched scan artifacts", async () => {
   assert.match(sql, /DROP CONSTRAINT IF EXISTS runs_data_state_check/);
   assert.match(sql, /ALTER TABLE changes ADD COLUMN IF NOT EXISTS site_id/);
   assert.match(sql, /UPDATE changes c SET site_id = o\.site_id/);
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS users/);
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS organizations/);
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS memberships/);
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS auth_sessions/);
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS login_tokens/);
+  assert.match(sql, /ALTER TABLE sites ADD COLUMN IF NOT EXISTS organization_id/);
+});
+
+test("tenant site reads always include the organization boundary", async () => {
+  const calls: Array<{ sql: string; values?: unknown[] }> = [];
+  const database: Queryable = { query: async (sql, values) => {
+    calls.push({ sql, ...(values ? { values } : {}) });
+    return { rows: [], rowCount: 0, command: "", oid: 0, fields: [] };
+  } };
+  const tenants = new PostgresTenantStore(database);
+  assert.equal(await tenants.getSite("org_a", "site_shared"), undefined);
+  assert.deepEqual(await tenants.listSites("org_a"), []);
+  assert.match(calls[0]!.sql, /id=\$1 AND organization_id=\$2/);
+  assert.deepEqual(calls[0]!.values, ["site_shared", "org_a"]);
+  assert.match(calls[1]!.sql, /WHERE organization_id=\$1/);
+  assert.deepEqual(calls[1]!.values, ["org_a"]);
+});
+
+test("membership lookup cannot cross organizations", async () => {
+  const calls: Array<{ sql: string; values?: unknown[] }> = [];
+  const database: Queryable = { query: async (sql, values) => {
+    calls.push({ sql, ...(values ? { values } : {}) });
+    return { rows: [], rowCount: 0, command: "", oid: 0, fields: [] };
+  } };
+  const membership = await new PostgresTenantStore(database).getMembership("user_1", "org_b");
+  assert.equal(membership, undefined);
+  assert.match(calls[0]!.sql, /user_id=\$1 AND organization_id=\$2/);
+  assert.deepEqual(calls[0]!.values, ["user_1", "org_b"]);
+});
+
+test("site creation refuses an existing site owned by another organization", async () => {
+  const database: Queryable = { query: async () => ({
+    rows: [{ id: "site_1", organization_id: "org_existing", url: "https://example.com", created_at: "2026-01-01T00:00:00Z" }],
+    rowCount: 1, command: "", oid: 0, fields: []
+  }) };
+  await assert.rejects(
+    new PostgresTenantStore(database).createSite({ id: "site_1", organizationId: "org_other", url: "https://example.com" }),
+    /another organization/
+  );
+});
+
+test("active sessions exclude expired and revoked records in SQL", async () => {
+  const calls: Array<{ sql: string; values?: unknown[] }> = [];
+  const database: Queryable = { query: async (sql, values) => {
+    calls.push({ sql, ...(values ? { values } : {}) });
+    return { rows: [], rowCount: 0, command: "", oid: 0, fields: [] };
+  } };
+  const at = new Date("2026-08-24T00:00:00Z");
+  assert.equal(await new PostgresTenantStore(database).findActiveSession("sha256", at), undefined);
+  assert.match(calls[0]!.sql, /revoked_at IS NULL AND expires_at>\$2/);
+  assert.deepEqual(calls[0]!.values, ["sha256", at.toISOString()]);
+});
+
+test("organization creation grants the requested user owner membership", async () => {
+  const calls: Array<{ sql: string; values?: unknown[] }> = [];
+  const database: Queryable = { query: async (sql, values) => {
+    calls.push({ sql, ...(values ? { values } : {}) });
+    return { rows: sql.includes("RETURNING id,slug") ? [{ id: "org_1", slug: "acme", name: "Acme", created_at: "2026-01-01T00:00:00Z" }] : [], rowCount: 1, command: "", oid: 0, fields: [] };
+  } };
+  const organization = await new PostgresTenantStore(database).createOrganization({ id: "org_1", slug: "acme", name: "Acme", ownerUserId: "user_1" });
+  assert.equal(organization.id, "org_1");
+  assert.match(calls[1]!.sql, /INSERT INTO memberships/);
+  assert.deepEqual(calls[1]!.values, ["org_1", "user_1", "owner"]);
 });
