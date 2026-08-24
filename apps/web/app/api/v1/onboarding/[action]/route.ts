@@ -45,6 +45,7 @@ export async function POST(request: Request, context: { params: Promise<{ action
       await runtime.tenants.upsertSiteOnboarding({ organizationId: session.organizationId, siteId: site.id, state: "search-console", githubInstallationId: String(verified.installationId), githubOwner: owner, githubRepository: repository, githubBranch: verified.branch });
     } else if (action === "posthog") {
       const site = await selectedSite(runtime, session.organizationId);
+      await requireConnected(runtime, session.organizationId, "google-search-console", "Connect Google Search Console before configuring conversions.");
       if (body.skip === true) {
         await runtime.tenants.upsertConnector({ organizationId: session.organizationId, provider: "posthog", status: "disconnected", health: { skipped: true } });
         await runtime.tenants.upsertSiteOnboarding({ organizationId: session.organizationId, siteId: site.id, state: "configuration" });
@@ -57,11 +58,17 @@ export async function POST(request: Request, context: { params: Promise<{ action
       }
     } else if (action === "configuration") {
       const site = await selectedSite(runtime, session.organizationId), branch = text(body.branch, "Repository branch");
+      await requireConnected(runtime, session.organizationId, "github", "Connect and verify GitHub before saving repository safety rules.");
+      await requireConnected(runtime, session.organizationId, "google-search-console", "Connect Google Search Console before saving repository safety rules.");
+      const analytics = await runtime.tenants.getConnector(session.organizationId, "posthog");
+      if (!analytics || (analytics.status !== "connected" && analytics.health.skipped !== true)) throw new Error("Verify PostHog or explicitly skip conversions before saving repository safety rules.");
       const protectedPaths = Array.isArray(body.protectedPaths) ? body.protectedPaths.map((item) => String(item).trim()).filter(Boolean) : [];
       if (protectedPaths.length > 100 || protectedPaths.some((item) => item.startsWith("/") || item.includes("..") || item.length > 200)) throw new Error("Protected paths must be repository-relative patterns without '..'.");
       await runtime.tenants.upsertSiteOnboarding({ organizationId: session.organizationId, siteId: site.id, state: "scan", githubBranch: branch, protectedPaths });
     } else if (action === "scan") {
       const site = await selectedSite(runtime, session.organizationId);
+      const configured = await runtime.tenants.getSiteOnboarding(session.organizationId, site.id);
+      if (configured?.state !== "scan" && configured?.state !== "complete") throw new Error("Complete connectors and repository safety rules before starting the first scan.");
       await runtime.tenants.upsertSiteOnboarding({ organizationId: session.organizationId, siteId: site.id, scanState: "running", errorCode: null, errorMessage: null });
       try {
         const artifact = await runFirstScan(session, site.id);
@@ -83,6 +90,10 @@ async function selectedSite(runtime: Awaited<ReturnType<typeof onboardingRuntime
   const sites = await runtime.tenants.listSites(organizationId);
   if (!sites[0]) throw new Error("Create a site before configuring connectors.");
   return sites[0];
+}
+
+async function requireConnected(runtime: Awaited<ReturnType<typeof onboardingRuntime>>, organizationId: string, provider: "github" | "google-search-console", message: string) {
+  if ((await runtime.tenants.getConnector(organizationId, provider))?.status !== "connected") throw new Error(message);
 }
 
 function text(value: unknown, label: string): string { if (typeof value !== "string" || !value.trim()) throw new Error(`${label} is required.`); return value.trim(); }
