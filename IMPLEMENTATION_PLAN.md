@@ -204,7 +204,7 @@ WordPress, outreach, rank tracking, GEO, autonomous publishing, white-label agen
 Acceptance: production does not depend on the operator workstation for web
 availability, durable state, scheduled reconciliation, or measurement.
 
-## Milestone 17 — Authentication and tenant isolation (pending)
+## Milestone 17 — Authentication and tenant isolation (complete)
 
 - Add users, organizations, memberships, sessions, and organization-owned sites.
 - Require an authenticated organization context for every product read and write.
@@ -214,6 +214,12 @@ availability, durable state, scheduled reconciliation, or measurement.
 
 Acceptance: cross-tenant access tests fail closed, session revocation is immediate,
 and the global API secret is no longer a customer authentication mechanism.
+
+Implemented with organization-scoped SQL reads and writes, one-use login tokens,
+revocable signed sessions, owner/approver/viewer roles, and a server-only tenant
+handoff from the authenticated dashboard to the internal API. A dry-run-first
+pilot importer safely assigns legacy artifacts to an explicit organization and
+refuses cross-tenant reassignment.
 
 ## Milestone 18 — Guided onboarding and connectors (pending)
 
