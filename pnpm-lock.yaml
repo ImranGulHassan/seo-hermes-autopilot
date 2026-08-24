@@ -72,6 +72,12 @@ importers:
       '@seo-autopilot/api':
         specifier: workspace:*
         version: link:../api
+      '@seo-autopilot/connectors':
+        specifier: workspace:*
+        version: link:../../packages/connectors
+      '@seo-autopilot/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@seo-autopilot/database':
         specifier: workspace:*
         version: link:../../packages/database

@@ -16,6 +16,21 @@ export interface OrganizationRecord { id: string; slug: string; name: string; cr
 export interface MembershipRecord { organizationId: string; userId: string; role: OrganizationRole; createdAt: string; }
 export interface SessionRecord { id: string; userId: string; organizationId: string; tokenHash: string; expiresAt: string; createdAt: string; lastSeenAt: string; revokedAt: string | null; }
 export interface SiteRecord { id: string; organizationId: string; url: string; createdAt: string; }
+export type ConnectorProvider = "github" | "google-search-console" | "posthog";
+export type ConnectorStatus = "disconnected" | "pending" | "connected" | "error";
+export type OnboardingState = "site" | "github" | "search-console" | "analytics" | "configuration" | "scan" | "complete";
+export type ScanState = "not-started" | "queued" | "running" | "complete" | "failed";
+export interface ConnectorRecord {
+  organizationId: string; provider: ConnectorProvider; status: ConnectorStatus;
+  externalAccountId: string | null; encryptedCredentials: string | null;
+  health: Record<string, unknown>; errorCode: string | null; errorMessage: string | null; updatedAt: string;
+}
+export interface SiteOnboardingRecord {
+  organizationId: string; siteId: string; state: OnboardingState;
+  githubInstallationId: string | null; githubOwner: string | null; githubRepository: string | null; githubBranch: string;
+  gscProperty: string | null; posthogProjectId: string | null; protectedPaths: string[];
+  scanState: ScanState; scanRunId: string | null; errorCode: string | null; errorMessage: string | null; updatedAt: string;
+}
 
 export async function migrate(database: Queryable): Promise<void> {
   await database.query(INITIAL_MIGRATION);
@@ -90,6 +105,25 @@ CREATE INDEX IF NOT EXISTS memberships_user_idx ON memberships(user_id, organiza
 CREATE INDEX IF NOT EXISTS auth_sessions_user_idx ON auth_sessions(user_id, expires_at DESC);
 CREATE INDEX IF NOT EXISTS auth_sessions_organization_idx ON auth_sessions(organization_id, expires_at DESC);
 CREATE INDEX IF NOT EXISTS sites_organization_idx ON sites(organization_id, url);
+CREATE UNIQUE INDEX IF NOT EXISTS sites_id_organization_uidx ON sites(id, organization_id);
+CREATE TABLE IF NOT EXISTS organization_connectors (
+  organization_id text NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  provider text NOT NULL CHECK (provider IN ('github', 'google-search-console', 'posthog')),
+  status text NOT NULL DEFAULT 'disconnected' CHECK (status IN ('disconnected', 'pending', 'connected', 'error')),
+  external_account_id text, encrypted_credentials text, health jsonb NOT NULL DEFAULT '{}'::jsonb,
+  error_code text, error_message text, updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (organization_id, provider)
+);
+CREATE TABLE IF NOT EXISTS site_onboarding (
+  site_id text PRIMARY KEY, organization_id text NOT NULL,
+  state text NOT NULL DEFAULT 'site' CHECK (state IN ('site','github','search-console','analytics','configuration','scan','complete')),
+  github_installation_id text, github_owner text, github_repository text, github_branch text NOT NULL DEFAULT 'main',
+  gsc_property text, posthog_project_id text, protected_paths jsonb NOT NULL DEFAULT '[]'::jsonb,
+  scan_state text NOT NULL DEFAULT 'not-started' CHECK (scan_state IN ('not-started','queued','running','complete','failed')),
+  scan_run_id text, error_code text, error_message text, updated_at timestamptz NOT NULL DEFAULT now(),
+  FOREIGN KEY (site_id, organization_id) REFERENCES sites(id, organization_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS site_onboarding_organization_idx ON site_onboarding(organization_id, updated_at DESC);
 `;
 
 function iso(value: Date | string): string { return new Date(value).toISOString(); }
@@ -116,7 +150,9 @@ export class PostgresTenantStore {
 
   async createOrganization(input: { id: string; slug: string; name: string; ownerUserId: string }): Promise<OrganizationRecord> {
     const result = await this.database.query<{ id: string; slug: string; name: string; created_at: Date | string }>(
-      "INSERT INTO organizations(id,slug,name) VALUES($1,$2,$3) RETURNING id,slug,name,created_at",
+      `INSERT INTO organizations(id,slug,name) VALUES($1,$2,$3)
+       ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name
+       RETURNING id,slug,name,created_at`,
       [input.id, input.slug, input.name]
     );
     await this.addMembership({ organizationId: input.id, userId: input.ownerUserId, role: "owner" });
@@ -192,13 +228,117 @@ export class PostgresTenantStore {
     return result.rows.map((row) => ({ id: row.id, organizationId: row.organization_id, url: row.url, createdAt: iso(row.created_at) }));
   }
 
+  async upsertConnector(input: {
+    organizationId: string; provider: ConnectorProvider; status: ConnectorStatus;
+    externalAccountId?: string | null; encryptedCredentials?: string | null;
+    health?: Record<string, unknown>; errorCode?: string | null; errorMessage?: string | null;
+  }): Promise<ConnectorRecord> {
+    const row = (await this.database.query<ConnectorRow>(
+      `INSERT INTO organization_connectors
+       (organization_id,provider,status,external_account_id,encrypted_credentials,health,error_code,error_message)
+       SELECT $1,$2,$3,$4,$5,$6::jsonb,$7,$8 WHERE EXISTS (SELECT 1 FROM organizations WHERE id=$1)
+       ON CONFLICT(organization_id,provider) DO UPDATE SET status=EXCLUDED.status,
+       external_account_id=CASE WHEN $9 THEN EXCLUDED.external_account_id ELSE organization_connectors.external_account_id END,
+       encrypted_credentials=CASE WHEN $10 THEN EXCLUDED.encrypted_credentials ELSE organization_connectors.encrypted_credentials END,
+       health=CASE WHEN $11 THEN EXCLUDED.health ELSE organization_connectors.health END,
+       error_code=EXCLUDED.error_code, error_message=EXCLUDED.error_message, updated_at=now()
+       RETURNING organization_id,provider,status,external_account_id,encrypted_credentials,health,error_code,error_message,updated_at`,
+      [input.organizationId, input.provider, input.status, input.externalAccountId ?? null,
+        input.encryptedCredentials ?? null, JSON.stringify(input.health ?? {}), input.errorCode ?? null, input.errorMessage ?? null,
+        "externalAccountId" in input, "encryptedCredentials" in input, "health" in input]
+    )).rows[0];
+    if (!row) throw new Error("Organization not found");
+    return this.connector(row);
+  }
+
+  async getConnector(organizationId: string, provider: ConnectorProvider): Promise<ConnectorRecord | undefined> {
+    const row = (await this.database.query<ConnectorRow>(
+      `SELECT organization_id,provider,status,external_account_id,encrypted_credentials,health,error_code,error_message,updated_at
+       FROM organization_connectors WHERE organization_id=$1 AND provider=$2`, [organizationId, provider]
+    )).rows[0];
+    return row ? this.connector(row) : undefined;
+  }
+
+  async listConnectors(organizationId: string): Promise<ConnectorRecord[]> {
+    const result = await this.database.query<ConnectorRow>(
+      `SELECT organization_id,provider,status,external_account_id,encrypted_credentials,health,error_code,error_message,updated_at
+       FROM organization_connectors WHERE organization_id=$1 ORDER BY provider`, [organizationId]
+    );
+    return result.rows.map((row) => this.connector(row));
+  }
+
+  async upsertSiteOnboarding(input: {
+    organizationId: string; siteId: string; state?: OnboardingState;
+    githubInstallationId?: string | null; githubOwner?: string | null; githubRepository?: string | null; githubBranch?: string;
+    gscProperty?: string | null; posthogProjectId?: string | null; protectedPaths?: string[];
+    scanState?: ScanState; scanRunId?: string | null; errorCode?: string | null; errorMessage?: string | null;
+  }): Promise<SiteOnboardingRecord> {
+    const row = (await this.database.query<SiteOnboardingRow>(
+      `INSERT INTO site_onboarding
+       (site_id,organization_id,state,github_installation_id,github_owner,github_repository,github_branch,
+        gsc_property,posthog_project_id,protected_paths,scan_state,scan_run_id,error_code,error_message)
+       SELECT $2,$1,COALESCE($3,'site'),$4,$5,$6,COALESCE($7,'main'),$8,$9,COALESCE($10::jsonb,'[]'::jsonb),
+        COALESCE($11,'not-started'),$12,$13,$14
+       WHERE EXISTS (SELECT 1 FROM sites WHERE id=$2 AND organization_id=$1)
+       ON CONFLICT(site_id) DO UPDATE SET state=COALESCE($3,site_onboarding.state),
+       github_installation_id=COALESCE($4,site_onboarding.github_installation_id),
+       github_owner=COALESCE($5,site_onboarding.github_owner), github_repository=COALESCE($6,site_onboarding.github_repository),
+       github_branch=COALESCE($7,site_onboarding.github_branch), gsc_property=COALESCE($8,site_onboarding.gsc_property),
+       posthog_project_id=COALESCE($9,site_onboarding.posthog_project_id),
+       protected_paths=COALESCE($10::jsonb,site_onboarding.protected_paths), scan_state=COALESCE($11,site_onboarding.scan_state),
+       scan_run_id=COALESCE($12,site_onboarding.scan_run_id), error_code=$13, error_message=$14, updated_at=now()
+       WHERE site_onboarding.organization_id=EXCLUDED.organization_id
+       RETURNING site_id,organization_id,state,github_installation_id,github_owner,github_repository,github_branch,
+       gsc_property,posthog_project_id,protected_paths,scan_state,scan_run_id,error_code,error_message,updated_at`,
+      [input.organizationId, input.siteId, input.state ?? null, input.githubInstallationId ?? null, input.githubOwner ?? null,
+        input.githubRepository ?? null, input.githubBranch ?? null, input.gscProperty ?? null, input.posthogProjectId ?? null,
+        input.protectedPaths ? JSON.stringify(input.protectedPaths) : null, input.scanState ?? null, input.scanRunId ?? null,
+        input.errorCode ?? null, input.errorMessage ?? null]
+    )).rows[0];
+    if (!row) throw new Error("Site not found in organization");
+    return this.onboarding(row);
+  }
+
+  async getSiteOnboarding(organizationId: string, siteId: string): Promise<SiteOnboardingRecord | undefined> {
+    const row = (await this.database.query<SiteOnboardingRow>(
+      `SELECT site_id,organization_id,state,github_installation_id,github_owner,github_repository,github_branch,
+       gsc_property,posthog_project_id,protected_paths,scan_state,scan_run_id,error_code,error_message,updated_at
+       FROM site_onboarding WHERE organization_id=$1 AND site_id=$2`, [organizationId, siteId]
+    )).rows[0];
+    return row ? this.onboarding(row) : undefined;
+  }
+
+  async listSiteOnboarding(organizationId: string): Promise<SiteOnboardingRecord[]> {
+    const result = await this.database.query<SiteOnboardingRow>(
+      `SELECT site_id,organization_id,state,github_installation_id,github_owner,github_repository,github_branch,
+       gsc_property,posthog_project_id,protected_paths,scan_state,scan_run_id,error_code,error_message,updated_at
+       FROM site_onboarding WHERE organization_id=$1 ORDER BY updated_at DESC`, [organizationId]
+    );
+    return result.rows.map((row) => this.onboarding(row));
+  }
+
   private user(row: { id: string; email: string; name: string | null; created_at: Date | string; disabled_at?: Date | string | null }): UserRecord {
     return { id: row.id, email: row.email, name: row.name, createdAt: iso(row.created_at), disabledAt: row.disabled_at ? iso(row.disabled_at) : null };
   }
   private session(row: { id: string; user_id: string; organization_id: string; token_hash: string; expires_at: Date | string; created_at: Date | string; last_seen_at: Date | string; revoked_at: Date | string | null }): SessionRecord {
     return { id: row.id, userId: row.user_id, organizationId: row.organization_id, tokenHash: row.token_hash, expiresAt: iso(row.expires_at), createdAt: iso(row.created_at), lastSeenAt: iso(row.last_seen_at), revokedAt: row.revoked_at ? iso(row.revoked_at) : null };
   }
+  private connector(row: ConnectorRow): ConnectorRecord {
+    return { organizationId: row.organization_id, provider: row.provider, status: row.status,
+      externalAccountId: row.external_account_id, encryptedCredentials: row.encrypted_credentials, health: row.health ?? {},
+      errorCode: row.error_code, errorMessage: row.error_message, updatedAt: iso(row.updated_at) };
+  }
+  private onboarding(row: SiteOnboardingRow): SiteOnboardingRecord {
+    return { organizationId: row.organization_id, siteId: row.site_id, state: row.state,
+      githubInstallationId: row.github_installation_id, githubOwner: row.github_owner, githubRepository: row.github_repository,
+      githubBranch: row.github_branch, gscProperty: row.gsc_property, posthogProjectId: row.posthog_project_id,
+      protectedPaths: row.protected_paths ?? [], scanState: row.scan_state, scanRunId: row.scan_run_id,
+      errorCode: row.error_code, errorMessage: row.error_message, updatedAt: iso(row.updated_at) };
+  }
 }
+
+interface ConnectorRow { organization_id: string; provider: ConnectorProvider; status: ConnectorStatus; external_account_id: string | null; encrypted_credentials: string | null; health: Record<string, unknown>; error_code: string | null; error_message: string | null; updated_at: Date | string; }
+interface SiteOnboardingRow { site_id: string; organization_id: string; state: OnboardingState; github_installation_id: string | null; github_owner: string | null; github_repository: string | null; github_branch: string; gsc_property: string | null; posthog_project_id: string | null; protected_paths: string[]; scan_state: ScanState; scan_run_id: string | null; error_code: string | null; error_message: string | null; updated_at: Date | string; }
 
 export class PostgresChangeLedger implements ChangeLedger {
   constructor(private readonly database: Queryable, private readonly siteId?: string) {}

@@ -1,6 +1,7 @@
 import { createHmac, createSign, timingSafeEqual } from "node:crypto";
 import type { ChangeLedger, ChangeWorkflow } from "@seo-autopilot/core";
 import { z } from "zod";
+import { ConnectorError, connectorHttpError } from "./errors.js";
 
 export interface GitHubFileChange { filePath: string; beforeContent: string; content: string }
 
@@ -165,6 +166,60 @@ export class GitHubAppClient {
       }
     });
   }
+}
+
+const repositorySchema = z.object({ id: z.number().int(), name: z.string(), full_name: z.string(), private: z.boolean(), default_branch: z.string(), permissions: z.object({ pull: z.boolean().optional(), push: z.boolean().optional(), admin: z.boolean().optional() }).optional() });
+const branchSchema = z.object({ name: z.string(), protected: z.boolean().default(false), commit: z.object({ sha: z.string() }) });
+
+export interface GitHubRepositoryVerification {
+  installationId: number;
+  installationAccount: string;
+  repositoryId: number;
+  repository: string;
+  private: boolean;
+  defaultBranch: string;
+  branch: string;
+  branchSha: string;
+  branchProtected: boolean;
+  canPull: boolean;
+  canPush: boolean;
+}
+
+/** Verifies an App installation and that the selected repository/branch is usable before onboarding persists it. */
+export async function verifyGitHubRepository(input: {
+  installationId: string | number;
+  owner: string;
+  repository: string;
+  branch?: string;
+  tokenProvider: { getAccessToken(): Promise<string> };
+  fetch?: typeof globalThis.fetch;
+  apiBaseUrl?: string;
+}): Promise<GitHubRepositoryVerification> {
+  const owner = input.owner.trim();
+  const repository = input.repository.trim();
+  if (!owner || !repository || !String(input.installationId).trim()) throw new ConnectorError("github", "invalid-config", "Installation, repository owner, and repository name are required.", "Select a GitHub App installation and repository.");
+  let token: string;
+  try { token = await input.tokenProvider.getAccessToken(); }
+  catch (cause) { throw new ConnectorError("github", "authentication-failed", "Could not mint a GitHub installation token.", "Reinstall the GitHub App or verify its private key and installation ID.", undefined, { cause }); }
+  const fetcher = input.fetch ?? globalThis.fetch;
+  const base = (input.apiBaseUrl ?? "https://api.github.com").replace(/\/$/, "");
+  const headers = { accept: "application/vnd.github+json", authorization: `Bearer ${token}`, "x-github-api-version": "2022-11-28" };
+  const get = async (path: string, operation: string): Promise<unknown> => {
+    const response = await fetcher(`${base}${path}`, { headers });
+    if (!response.ok) throw await connectorHttpError("github", response, operation);
+    return response.json();
+  };
+  // Successfully minting the installation token verifies the installation ID. Installation tokens cannot call
+  // App-JWT-only /app/installations endpoints, so repository access is the authoritative scope check.
+  const repo = repositorySchema.parse(await get(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}`, "GitHub repository verification"));
+  const branchName = input.branch?.trim() || repo.default_branch;
+  const branch = branchSchema.parse(await get(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/branches/${encodeURIComponent(branchName)}`, "GitHub branch verification"));
+  return {
+    installationId: Number(input.installationId), installationAccount: owner, repositoryId: repo.id,
+    repository: repo.full_name, private: repo.private, defaultBranch: repo.default_branch, branch: branch.name,
+    branchSha: branch.commit.sha, branchProtected: branch.protected, canPull: repo.permissions?.pull ?? true,
+    canPush: Boolean(repo.permissions?.push || repo.permissions?.admin)
+  };
 }
 
 export async function reconcileGitHubChanges(input: { ledger: ChangeLedger; workflow: ChangeWorkflow; github: GitHubLifecycleProvider; now?: Date }): Promise<{ advanced: Array<{ changeId: string; actions: string[] }>; waiting: string[]; errors: Array<{ changeId: string; error: string }> }> {

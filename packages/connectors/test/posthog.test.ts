@@ -1,6 +1,23 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { PostHogConversionClient, enrichWithConversions } from "../src/index.js";
+import { ConnectorError, PostHogConversionClient, enrichWithConversions, verifyPostHogConnection } from "../src/index.js";
+
+test("verifies a PostHog project and optional conversion event", async () => {
+  let calls = 0;
+  const result = await verifyPostHogConnection({ personalApiKey: "phx_secret", projectId: 42, host: "https://eu.posthog.com/", eventName: "purchase", fetch: async (input) => {
+    calls += 1;
+    return String(input).endsWith("/query/") ? Response.json({ results: [[12]] }) : Response.json({ id: 42, name: "Production" });
+  } });
+  assert.equal(calls, 2);
+  assert.equal(result.projectName, "Production");
+  assert.equal(result.eventSeen, true);
+  assert.equal(result.host, "https://eu.posthog.com");
+});
+
+test("returns typed errors for invalid PostHog credentials", async () => {
+  await assert.rejects(() => verifyPostHogConnection({ personalApiKey: "bad", projectId: 1, fetch: async () => new Response("invalid token", { status: 401 }) }),
+    (error: unknown) => error instanceof ConnectorError && error.code === "authentication-failed" && /Reconnect/.test(error.action));
+});
 
 test("queries PostHog with bound values and enriches matching landing pages", async () => {
   let requestBody: any;

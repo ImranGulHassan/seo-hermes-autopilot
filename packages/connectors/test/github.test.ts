@@ -2,7 +2,25 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createHmac, generateKeyPairSync } from "node:crypto";
 import { ChangeWorkflow, InMemoryChangeLedger, type MetricBaseline, type Opportunity } from "@seo-autopilot/core";
-import { GitHubAppAuthenticator, GitHubAppClient, InMemoryWebhookDeliveryStore, handleGitHubWebhook, reconcileGitHubChanges } from "../src/index.js";
+import { ConnectorError, GitHubAppAuthenticator, GitHubAppClient, InMemoryWebhookDeliveryStore, handleGitHubWebhook, reconcileGitHubChanges, verifyGitHubRepository } from "../src/index.js";
+
+test("verifies a GitHub App installation, repository, and selected branch", async () => {
+  const result = await verifyGitHubRepository({ installationId: 88, owner: "acme", repository: "docs", branch: "production", tokenProvider: { getAccessToken: async () => "token" }, fetch: async (input) => {
+    const url = String(input);
+    if (url.endsWith("/repos/acme/docs")) return Response.json({ id: 9, name: "docs", full_name: "acme/docs", private: true, default_branch: "main", permissions: { pull: true, push: true, admin: false } });
+    if (url.endsWith("/repos/acme/docs/branches/production")) return Response.json({ name: "production", protected: true, commit: { sha: "abc" } });
+    return new Response("unexpected", { status: 500 });
+  } });
+  assert.equal(result.repository, "acme/docs");
+  assert.equal(result.branch, "production");
+  assert.equal(result.canPush, true);
+  assert.equal(result.branchProtected, true);
+});
+
+test("returns an actionable typed GitHub permission error", async () => {
+  await assert.rejects(() => verifyGitHubRepository({ installationId: 88, owner: "acme", repository: "docs", tokenProvider: { getAccessToken: async () => "token" }, fetch: async () => new Response("resource not accessible", { status: 403 }) }),
+    (error: unknown) => error instanceof ConnectorError && error.code === "permission-denied" && /permissions/i.test(error.action));
+});
 
 test("mints and caches a GitHub App installation token", async () => {
   const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs8", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } });

@@ -1,5 +1,6 @@
 import { normalizeUrl, type SearchMetric } from "@seo-autopilot/core";
 import { z } from "zod";
+import { ConnectorError, connectorHttpError } from "./errors.js";
 
 const queryResponseSchema = z.object({ results: z.array(z.tuple([z.string(), z.coerce.number(), z.coerce.number()])) });
 
@@ -8,6 +9,31 @@ export interface PostHogOptions {
   projectId: string | number;
   host?: string;
   fetch?: typeof globalThis.fetch;
+}
+
+const projectSchema = z.object({ id: z.union([z.string(), z.number()]), name: z.string().default("PostHog project") });
+
+export interface PostHogVerification { projectId: string; projectName: string; host: string; eventName: string | null; eventSeen: boolean | null }
+
+export async function verifyPostHogConnection(input: PostHogOptions & { eventName?: string }): Promise<PostHogVerification> {
+  if (!input.personalApiKey.trim() || !String(input.projectId).trim()) throw new ConnectorError("posthog", "invalid-config", "PostHog personal API key and project ID are required.", "Create a personal API key with project access and enter its project ID.");
+  if (input.eventName && !/^[A-Za-z0-9_$ .:-]+$/.test(input.eventName)) throw new ConnectorError("posthog", "invalid-config", "PostHog event name contains unsupported characters.", "Choose an existing conversion event.");
+  const host = (input.host ?? "https://us.posthog.com").replace(/\/$/, "");
+  const fetcher = input.fetch ?? globalThis.fetch;
+  const headers = { authorization: `Bearer ${input.personalApiKey}`, "content-type": "application/json" };
+  const projectResponse = await fetcher(`${host}/api/projects/${encodeURIComponent(String(input.projectId))}/`, { headers });
+  if (!projectResponse.ok) throw await connectorHttpError("posthog", projectResponse, "PostHog project verification");
+  let project: z.infer<typeof projectSchema>;
+  try { project = projectSchema.parse(await projectResponse.json()); }
+  catch (cause) { throw new ConnectorError("posthog", "unexpected-response", "PostHog returned an invalid project response.", "Check the PostHog host and project ID.", undefined, { cause }); }
+  let eventSeen: boolean | null = null;
+  if (input.eventName) {
+    const queryResponse = await fetcher(`${host}/api/projects/${encodeURIComponent(String(input.projectId))}/query/`, { method: "POST", headers, body: JSON.stringify({ query: { kind: "HogQLQuery", query: `SELECT count() FROM events WHERE event = '${input.eventName}' LIMIT 1` } }) });
+    if (!queryResponse.ok) throw await connectorHttpError("posthog", queryResponse, "PostHog event verification");
+    const query = z.object({ results: z.array(z.tuple([z.coerce.number()])) }).parse(await queryResponse.json());
+    eventSeen = (query.results[0]?.[0] ?? 0) > 0;
+  }
+  return { projectId: String(project.id), projectName: project.name, host, eventName: input.eventName ?? null, eventSeen };
 }
 
 export class PostHogConversionClient {

@@ -1,5 +1,7 @@
 import type { SearchMetric, SearchQueryMetric } from "@seo-autopilot/core";
 import { z } from "zod";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { ConnectorError, connectorHttpError } from "./errors.js";
 
 const responseSchema = z.object({
   rows: z.array(z.object({
@@ -26,6 +28,69 @@ export interface GoogleOAuthTokenProviderOptions {
 }
 
 const oauthTokenSchema = z.object({ access_token: z.string().min(1), expires_in: z.number().positive().default(3600) });
+
+export const GSC_OAUTH_SCOPES = ["https://www.googleapis.com/auth/webmasters.readonly"] as const;
+
+export interface GoogleOAuthState { organizationId: string; userId: string; returnTo: string; nonce: string; expiresAt: string }
+
+export function createGoogleOAuthState(input: { organizationId: string; userId: string; returnTo?: string; secret: string; now?: Date; ttlSeconds?: number; nonce?: string }): string {
+  if (!input.organizationId.trim() || !input.userId.trim() || input.secret.length < 32) throw new ConnectorError("google-search-console", "invalid-config", "OAuth state requires an organization, user, and a secret of at least 32 characters.", "Configure a strong OAuth state secret.");
+  const returnTo = input.returnTo ?? "/onboarding";
+  if (!returnTo.startsWith("/") || returnTo.startsWith("//")) throw new ConnectorError("google-search-console", "invalid-config", "OAuth return path must be local.", "Use a relative path beginning with one slash.");
+  const now = input.now ?? new Date();
+  const payload: GoogleOAuthState = { organizationId: input.organizationId, userId: input.userId, returnTo, nonce: input.nonce ?? randomBytes(16).toString("base64url"), expiresAt: new Date(now.getTime() + (input.ttlSeconds ?? 600) * 1000).toISOString() };
+  const encoded = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  return `${encoded}.${createHmac("sha256", input.secret).update(encoded).digest("base64url")}`;
+}
+
+export function verifyGoogleOAuthState(state: string, secret: string, now = new Date()): GoogleOAuthState {
+  const [encoded, signature, extra] = state.split(".");
+  if (!encoded || !signature || extra || secret.length < 32) throw new ConnectorError("google-search-console", "invalid-state", "Google OAuth state is invalid.", "Restart the Google Search Console connection.");
+  const expected = createHmac("sha256", secret).update(encoded).digest("base64url");
+  const receivedBytes = Buffer.from(signature); const expectedBytes = Buffer.from(expected);
+  if (receivedBytes.length !== expectedBytes.length || !timingSafeEqual(receivedBytes, expectedBytes)) throw new ConnectorError("google-search-console", "invalid-state", "Google OAuth state signature is invalid.", "Restart the Google Search Console connection.");
+  let parsed: GoogleOAuthState;
+  try { parsed = z.object({ organizationId: z.string().min(1), userId: z.string().min(1), returnTo: z.string().regex(/^\/(?!\/)/), nonce: z.string().min(8), expiresAt: z.string().datetime() }).parse(JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"))); }
+  catch (cause) { throw new ConnectorError("google-search-console", "invalid-state", "Google OAuth state payload is invalid.", "Restart the Google Search Console connection.", undefined, { cause }); }
+  if (new Date(parsed.expiresAt) <= now) throw new ConnectorError("google-search-console", "expired-state", "Google OAuth state has expired.", "Restart the Google Search Console connection.");
+  return parsed;
+}
+
+export function googleOAuthAuthorizationUrl(input: { clientId: string; redirectUri: string; state: string; loginHint?: string; authorizationEndpoint?: string }): string {
+  if (!input.clientId.trim() || !input.redirectUri.trim() || !input.state.trim()) throw new ConnectorError("google-search-console", "invalid-config", "Google OAuth client ID, redirect URI, and state are required.", "Complete the Google OAuth configuration.");
+  const url = new URL(input.authorizationEndpoint ?? "https://accounts.google.com/o/oauth2/v2/auth");
+  url.search = new URLSearchParams({ client_id: input.clientId, redirect_uri: input.redirectUri, response_type: "code", scope: GSC_OAUTH_SCOPES.join(" "), access_type: "offline", prompt: "consent", state: input.state, ...(input.loginHint ? { login_hint: input.loginHint } : {}) }).toString();
+  return url.toString();
+}
+
+const codeTokenSchema = oauthTokenSchema.extend({ refresh_token: z.string().min(1).optional(), scope: z.string().optional(), token_type: z.string().optional() });
+export type GoogleOAuthCodeTokens = z.infer<typeof codeTokenSchema>;
+
+export async function exchangeGoogleOAuthCode(input: { clientId: string; clientSecret: string; code: string; redirectUri: string; fetch?: typeof globalThis.fetch; tokenEndpoint?: string }): Promise<GoogleOAuthCodeTokens> {
+  if (![input.clientId, input.clientSecret, input.code, input.redirectUri].every((value) => value.trim())) throw new ConnectorError("google-search-console", "invalid-config", "Google OAuth code exchange is missing required configuration.", "Check the OAuth client and retry the connection.");
+  const response = await (input.fetch ?? globalThis.fetch)(input.tokenEndpoint ?? "https://oauth2.googleapis.com/token", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ client_id: input.clientId, client_secret: input.clientSecret, code: input.code, redirect_uri: input.redirectUri, grant_type: "authorization_code" }) });
+  if (!response.ok) throw await connectorHttpError("google-search-console", response, "Google OAuth code exchange");
+  try { return codeTokenSchema.parse(await response.json()); }
+  catch (cause) { throw new ConnectorError("google-search-console", "unexpected-response", "Google returned an invalid OAuth token response.", "Retry the connection; if it persists, check the OAuth client configuration.", undefined, { cause }); }
+}
+
+const sitesSchema = z.object({ siteEntry: z.array(z.object({ siteUrl: z.string().min(1), permissionLevel: z.string().min(1) })).optional().default([]) });
+export interface GscProperty { siteUrl: string; permissionLevel: string; writable: boolean }
+
+export async function listSearchConsoleProperties(input: { accessToken: string; fetch?: typeof globalThis.fetch; endpoint?: string }): Promise<GscProperty[]> {
+  if (!input.accessToken.trim()) throw new ConnectorError("google-search-console", "invalid-config", "A Google access token is required.", "Reconnect Google Search Console.");
+  const response = await (input.fetch ?? globalThis.fetch)(`${(input.endpoint ?? "https://searchconsole.googleapis.com/webmasters/v3").replace(/\/$/, "")}/sites`, { headers: { authorization: `Bearer ${input.accessToken}` } });
+  if (!response.ok) throw await connectorHttpError("google-search-console", response, "Search Console property listing");
+  const parsed = sitesSchema.parse(await response.json());
+  return parsed.siteEntry.map((entry) => ({ ...entry, writable: ["siteOwner", "siteFullUser"].includes(entry.permissionLevel) }));
+}
+
+export async function verifySearchConsoleProperty(input: { accessToken: string; propertyUrl: string; fetch?: typeof globalThis.fetch; endpoint?: string }): Promise<GscProperty> {
+  const properties = await listSearchConsoleProperties(input);
+  const property = properties.find((entry) => entry.siteUrl === input.propertyUrl);
+  if (!property) throw new ConnectorError("google-search-console", "not-found", `Search Console property ${input.propertyUrl} is not accessible.`, "Select an available property or grant this Google account access.");
+  return property;
+}
 
 export class GoogleOAuthTokenProvider {
   private cached?: { token: string; expiresAt: number };
