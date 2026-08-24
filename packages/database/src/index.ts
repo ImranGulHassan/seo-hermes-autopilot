@@ -9,15 +9,53 @@ export interface Queryable {
 export function createPool(config: PoolConfig = {}): Pool { return new Pool(config); }
 export function siteIdForUrl(siteUrl: string): string { return `site_${Buffer.from(siteUrl).toString("base64url").slice(0, 32)}`; }
 
+export type OrganizationRole = "owner" | "approver" | "viewer";
+
+export interface UserRecord { id: string; email: string; name: string | null; createdAt: string; disabledAt: string | null; }
+export interface OrganizationRecord { id: string; slug: string; name: string; createdAt: string; }
+export interface MembershipRecord { organizationId: string; userId: string; role: OrganizationRole; createdAt: string; }
+export interface SessionRecord { id: string; userId: string; organizationId: string; tokenHash: string; expiresAt: string; createdAt: string; lastSeenAt: string; revokedAt: string | null; }
+export interface SiteRecord { id: string; organizationId: string; url: string; createdAt: string; }
+
 export async function migrate(database: Queryable): Promise<void> {
   await database.query(INITIAL_MIGRATION);
 }
 
 const INITIAL_MIGRATION = `
+CREATE TABLE IF NOT EXISTS users (
+  id text PRIMARY KEY, email text NOT NULL UNIQUE, name text,
+  created_at timestamptz NOT NULL DEFAULT now(), disabled_at timestamptz
+);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS disabled_at timestamptz;
+CREATE TABLE IF NOT EXISTS organizations (
+  id text PRIMARY KEY, slug text NOT NULL UNIQUE, name text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE organizations ALTER COLUMN slug DROP NOT NULL;
+CREATE TABLE IF NOT EXISTS memberships (
+  organization_id text NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  role text NOT NULL CHECK (role IN ('owner', 'approver', 'viewer')),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (organization_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS auth_sessions (
+  id text PRIMARY KEY, user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  organization_id text NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  token_hash text NOT NULL UNIQUE, expires_at timestamptz NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(), last_seen_at timestamptz NOT NULL DEFAULT now(),
+  revoked_at timestamptz
+);
+CREATE TABLE IF NOT EXISTS login_tokens (
+  token_hash text PRIMARY KEY, user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  organization_id text NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  expires_at timestamptz NOT NULL, used_at timestamptz, created_at timestamptz NOT NULL DEFAULT now()
+);
 CREATE TABLE IF NOT EXISTS sites (
   id text PRIMARY KEY, url text NOT NULL UNIQUE,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE sites ADD COLUMN IF NOT EXISTS organization_id text REFERENCES organizations(id) ON DELETE CASCADE;
 CREATE TABLE IF NOT EXISTS runs (
   id text PRIMARY KEY, site_id text NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
   started_at timestamptz NOT NULL, completed_at timestamptz NOT NULL,
@@ -48,7 +86,119 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
 CREATE INDEX IF NOT EXISTS opportunities_site_value_idx ON opportunities(site_id, estimated_value DESC);
 CREATE INDEX IF NOT EXISTS changes_state_idx ON changes(state);
 CREATE INDEX IF NOT EXISTS changes_site_state_idx ON changes(site_id, state);
+CREATE INDEX IF NOT EXISTS memberships_user_idx ON memberships(user_id, organization_id);
+CREATE INDEX IF NOT EXISTS auth_sessions_user_idx ON auth_sessions(user_id, expires_at DESC);
+CREATE INDEX IF NOT EXISTS auth_sessions_organization_idx ON auth_sessions(organization_id, expires_at DESC);
+CREATE INDEX IF NOT EXISTS sites_organization_idx ON sites(organization_id, url);
 `;
+
+function iso(value: Date | string): string { return new Date(value).toISOString(); }
+
+/** Tenant and authentication persistence. Every site read requires an organization id. */
+export class PostgresTenantStore {
+  constructor(private readonly database: Queryable) {}
+
+  async createUser(input: { id: string; email: string; name?: string | null }): Promise<UserRecord> {
+    const result = await this.database.query<{ id: string; email: string; name: string | null; created_at: Date | string; disabled_at: Date | string | null }>(
+      `INSERT INTO users(id,email,name) VALUES($1,lower($2),$3)
+       ON CONFLICT(email) DO UPDATE SET name=COALESCE(EXCLUDED.name,users.name)
+       RETURNING id,email,name,created_at,disabled_at`, [input.id, input.email, input.name ?? null]
+    );
+    return this.user(result.rows[0]!);
+  }
+
+  async findUserByEmail(email: string): Promise<UserRecord | undefined> {
+    const row = (await this.database.query<{ id: string; email: string; name: string | null; created_at: Date | string; disabled_at: Date | string | null }>(
+      "SELECT id,email,name,created_at,disabled_at FROM users WHERE email=lower($1)", [email]
+    )).rows[0];
+    return row ? this.user(row) : undefined;
+  }
+
+  async createOrganization(input: { id: string; slug: string; name: string; ownerUserId: string }): Promise<OrganizationRecord> {
+    const result = await this.database.query<{ id: string; slug: string; name: string; created_at: Date | string }>(
+      "INSERT INTO organizations(id,slug,name) VALUES($1,$2,$3) RETURNING id,slug,name,created_at",
+      [input.id, input.slug, input.name]
+    );
+    await this.addMembership({ organizationId: input.id, userId: input.ownerUserId, role: "owner" });
+    const row = result.rows[0]!;
+    return { id: row.id, slug: row.slug, name: row.name, createdAt: iso(row.created_at) };
+  }
+
+  async addMembership(input: { organizationId: string; userId: string; role: OrganizationRole }): Promise<void> {
+    await this.database.query(
+      `INSERT INTO memberships(organization_id,user_id,role) VALUES($1,$2,$3)
+       ON CONFLICT(organization_id,user_id) DO UPDATE SET role=EXCLUDED.role`,
+      [input.organizationId, input.userId, input.role]
+    );
+  }
+
+  async listMemberships(userId: string): Promise<MembershipRecord[]> {
+    const result = await this.database.query<{ organization_id: string; user_id: string; role: OrganizationRole; created_at: Date | string }>(
+      "SELECT organization_id,user_id,role,created_at FROM memberships WHERE user_id=$1 ORDER BY created_at", [userId]
+    );
+    return result.rows.map((row) => ({ organizationId: row.organization_id, userId: row.user_id, role: row.role, createdAt: iso(row.created_at) }));
+  }
+
+  async getMembership(userId: string, organizationId: string): Promise<MembershipRecord | undefined> {
+    const row = (await this.database.query<{ organization_id: string; user_id: string; role: OrganizationRole; created_at: Date | string }>(
+      "SELECT organization_id,user_id,role,created_at FROM memberships WHERE user_id=$1 AND organization_id=$2", [userId, organizationId]
+    )).rows[0];
+    return row ? { organizationId: row.organization_id, userId: row.user_id, role: row.role, createdAt: iso(row.created_at) } : undefined;
+  }
+
+  async createSession(input: { id: string; userId: string; organizationId: string; tokenHash: string; expiresAt: string }): Promise<SessionRecord> {
+    const row = (await this.database.query<{ id: string; user_id: string; organization_id: string; token_hash: string; expires_at: Date | string; created_at: Date | string; last_seen_at: Date | string; revoked_at: Date | string | null }>(
+      `INSERT INTO auth_sessions(id,user_id,organization_id,token_hash,expires_at) VALUES($1,$2,$3,$4,$5)
+       RETURNING id,user_id,organization_id,token_hash,expires_at,created_at,last_seen_at,revoked_at`,
+      [input.id, input.userId, input.organizationId, input.tokenHash, input.expiresAt]
+    )).rows[0]!;
+    return this.session(row);
+  }
+
+  async findActiveSession(tokenHash: string, at = new Date()): Promise<SessionRecord | undefined> {
+    const row = (await this.database.query<{ id: string; user_id: string; organization_id: string; token_hash: string; expires_at: Date | string; created_at: Date | string; last_seen_at: Date | string; revoked_at: Date | string | null }>(
+      `SELECT id,user_id,organization_id,token_hash,expires_at,created_at,last_seen_at,revoked_at FROM auth_sessions
+       WHERE token_hash=$1 AND revoked_at IS NULL AND expires_at>$2`, [tokenHash, at.toISOString()]
+    )).rows[0];
+    return row ? this.session(row) : undefined;
+  }
+
+  async revokeSession(id: string, userId: string): Promise<void> {
+    await this.database.query("UPDATE auth_sessions SET revoked_at=now() WHERE id=$1 AND user_id=$2 AND revoked_at IS NULL", [id, userId]);
+  }
+
+  async createSite(input: { id?: string; organizationId: string; url: string }): Promise<SiteRecord> {
+    const id = input.id ?? siteIdForUrl(input.url);
+    const row = (await this.database.query<{ id: string; organization_id: string; url: string; created_at: Date | string }>(
+      `INSERT INTO sites(id,organization_id,url) VALUES($1,$2,$3)
+       ON CONFLICT(url) DO UPDATE SET url=EXCLUDED.url
+       RETURNING id,organization_id,url,created_at`, [id, input.organizationId, input.url]
+    )).rows[0]!;
+    if (row.organization_id !== input.organizationId) throw new Error("Site belongs to another organization");
+    return { id: row.id, organizationId: row.organization_id, url: row.url, createdAt: iso(row.created_at) };
+  }
+
+  async getSite(organizationId: string, siteId: string): Promise<SiteRecord | undefined> {
+    const row = (await this.database.query<{ id: string; organization_id: string; url: string; created_at: Date | string }>(
+      "SELECT id,organization_id,url,created_at FROM sites WHERE id=$1 AND organization_id=$2", [siteId, organizationId]
+    )).rows[0];
+    return row ? { id: row.id, organizationId: row.organization_id, url: row.url, createdAt: iso(row.created_at) } : undefined;
+  }
+
+  async listSites(organizationId: string): Promise<SiteRecord[]> {
+    const result = await this.database.query<{ id: string; organization_id: string; url: string; created_at: Date | string }>(
+      "SELECT id,organization_id,url,created_at FROM sites WHERE organization_id=$1 ORDER BY url", [organizationId]
+    );
+    return result.rows.map((row) => ({ id: row.id, organizationId: row.organization_id, url: row.url, createdAt: iso(row.created_at) }));
+  }
+
+  private user(row: { id: string; email: string; name: string | null; created_at: Date | string; disabled_at?: Date | string | null }): UserRecord {
+    return { id: row.id, email: row.email, name: row.name, createdAt: iso(row.created_at), disabledAt: row.disabled_at ? iso(row.disabled_at) : null };
+  }
+  private session(row: { id: string; user_id: string; organization_id: string; token_hash: string; expires_at: Date | string; created_at: Date | string; last_seen_at: Date | string; revoked_at: Date | string | null }): SessionRecord {
+    return { id: row.id, userId: row.user_id, organizationId: row.organization_id, tokenHash: row.token_hash, expiresAt: iso(row.expires_at), createdAt: iso(row.created_at), lastSeenAt: iso(row.last_seen_at), revokedAt: row.revoked_at ? iso(row.revoked_at) : null };
+  }
+}
 
 export class PostgresChangeLedger implements ChangeLedger {
   constructor(private readonly database: Queryable, private readonly siteId?: string) {}
@@ -87,37 +237,41 @@ export class PostgresWebhookDeliveryStore implements WebhookDeliveryStore {
 
 export class PostgresRunStore {
   constructor(private readonly database: Queryable) {}
-  async save(artifact: ScanArtifact): Promise<void> {
+  async save(artifact: ScanArtifact, organizationId?: string): Promise<void> {
     const siteId = siteIdForUrl(artifact.siteUrl);
-    await this.database.query("INSERT INTO sites(id,url) VALUES($1,$2) ON CONFLICT(url) DO NOTHING", [siteId, artifact.siteUrl]);
+    await this.database.query("INSERT INTO sites(id,url,organization_id) VALUES($1,$2,$3) ON CONFLICT(url) DO NOTHING", [siteId, artifact.siteUrl, organizationId ?? null]);
+    if (organizationId) {
+      const owned = await this.database.query("SELECT 1 FROM sites WHERE url=$1 AND organization_id=$2", [artifact.siteUrl, organizationId]);
+      if (owned.rowCount !== 1) throw new Error("Site belongs to another organization");
+    }
     await this.database.query(
       `INSERT INTO runs(id,site_id,started_at,completed_at,data_state,artifact) VALUES($1,(SELECT id FROM sites WHERE url=$2),$3,$4,$5,$6::jsonb)
        ON CONFLICT(id) DO NOTHING`, [artifact.runId, artifact.siteUrl, artifact.startedAt, artifact.completedAt, artifact.dataState, JSON.stringify(artifact)]
     );
     for (const opportunity of artifact.opportunities) await this.saveOpportunity(siteId, opportunity);
   }
-  async listOpportunities(siteId?: string): Promise<Opportunity[]> {
+  async listOpportunities(organizationId: string, siteId?: string): Promise<Opportunity[]> {
     const result = siteId
-      ? await this.database.query<{ payload: Opportunity }>("SELECT payload FROM opportunities WHERE site_id=$1 ORDER BY estimated_value DESC", [siteId])
-      : await this.database.query<{ payload: Opportunity }>("SELECT payload FROM opportunities ORDER BY estimated_value DESC");
+      ? await this.database.query<{ payload: Opportunity }>("SELECT o.payload FROM opportunities o JOIN sites s ON s.id=o.site_id WHERE s.organization_id=$1 AND o.site_id=$2 ORDER BY o.estimated_value DESC", [organizationId, siteId])
+      : await this.database.query<{ payload: Opportunity }>("SELECT o.payload FROM opportunities o JOIN sites s ON s.id=o.site_id WHERE s.organization_id=$1 ORDER BY o.estimated_value DESC", [organizationId]);
     return result.rows.map((row) => row.payload);
   }
-  async listSites(): Promise<Array<{ id: string; url: string; lastRunAt: string | null }>> {
+  async listSites(organizationId: string): Promise<Array<{ id: string; url: string; lastRunAt: string | null }>> {
     return (await this.database.query<{ id: string; url: string; last_run_at: Date | string | null }>(
-      "SELECT s.id,s.url,max(r.completed_at) AS last_run_at FROM sites s LEFT JOIN runs r ON r.site_id=s.id GROUP BY s.id,s.url ORDER BY last_run_at DESC NULLS LAST,s.url"
+      "SELECT s.id,s.url,max(r.completed_at) AS last_run_at FROM sites s LEFT JOIN runs r ON r.site_id=s.id WHERE s.organization_id=$1 GROUP BY s.id,s.url ORDER BY last_run_at DESC NULLS LAST,s.url", [organizationId]
     )).rows.map((row) => ({ id: row.id, url: row.url, lastRunAt: row.last_run_at ? new Date(row.last_run_at).toISOString() : null }));
   }
-  async listRecent(limit = 30, siteId?: string): Promise<ScanArtifact[]> {
+  async listRecent(organizationId: string, limit = 30, siteId?: string): Promise<ScanArtifact[]> {
     const safeLimit = Math.max(1, Math.min(Math.trunc(limit), 100));
     const result = siteId
-      ? await this.database.query<{ artifact: ScanArtifact }>("SELECT artifact FROM runs WHERE site_id=$1 ORDER BY completed_at DESC LIMIT $2", [siteId, safeLimit])
-      : await this.database.query<{ artifact: ScanArtifact }>("SELECT artifact FROM runs ORDER BY completed_at DESC LIMIT $1", [safeLimit]);
+      ? await this.database.query<{ artifact: ScanArtifact }>("SELECT r.artifact FROM runs r JOIN sites s ON s.id=r.site_id WHERE s.organization_id=$1 AND r.site_id=$2 ORDER BY r.completed_at DESC LIMIT $3", [organizationId, siteId, safeLimit])
+      : await this.database.query<{ artifact: ScanArtifact }>("SELECT r.artifact FROM runs r JOIN sites s ON s.id=r.site_id WHERE s.organization_id=$1 ORDER BY r.completed_at DESC LIMIT $2", [organizationId, safeLimit]);
     return result.rows.map((row) => row.artifact);
   }
-  async listChanges(siteId?: string): Promise<ChangeRecord[]> {
+  async listChanges(organizationId: string, siteId?: string): Promise<ChangeRecord[]> {
     const result = siteId
-      ? await this.database.query<{ payload: ChangeRecord }>("SELECT c.payload FROM changes c WHERE c.site_id=$1 ORDER BY c.updated_at DESC", [siteId])
-      : await this.database.query<{ payload: ChangeRecord }>("SELECT payload FROM changes ORDER BY updated_at DESC");
+      ? await this.database.query<{ payload: ChangeRecord }>("SELECT c.payload FROM changes c JOIN sites s ON s.id=c.site_id WHERE s.organization_id=$1 AND c.site_id=$2 ORDER BY c.updated_at DESC", [organizationId, siteId])
+      : await this.database.query<{ payload: ChangeRecord }>("SELECT c.payload FROM changes c JOIN sites s ON s.id=c.site_id WHERE s.organization_id=$1 ORDER BY c.updated_at DESC", [organizationId]);
     return result.rows.map((row) => row.payload);
   }
   private async saveOpportunity(siteId: string, opportunity: Opportunity) {

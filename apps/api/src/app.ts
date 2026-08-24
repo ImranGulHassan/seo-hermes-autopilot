@@ -12,11 +12,11 @@ const artifactEnvelopeSchema = z.object({
 export interface ApiStores {
   changes: ChangeLedger;
   deliveries: WebhookDeliveryStore;
-  listSites(): Promise<Array<{ id: string; url: string; lastRunAt: string | null }>>;
-  listChanges(siteId?: string): Promise<Awaited<ReturnType<ChangeLedger["list"]>>>;
-  listOpportunities(siteId?: string): Promise<Opportunity[]>;
-  listRecentRuns(limit?: number, siteId?: string): Promise<ScanArtifact[]>;
-  saveRun(artifact: ScanArtifact): Promise<void>;
+  listSites(organizationId: string): Promise<Array<{ id: string; url: string; lastRunAt: string | null }>>;
+  listChanges(organizationId: string, siteId?: string): Promise<Awaited<ReturnType<ChangeLedger["list"]>>>;
+  listOpportunities(organizationId: string, siteId?: string): Promise<Opportunity[]>;
+  listRecentRuns(organizationId: string, limit?: number, siteId?: string): Promise<ScanArtifact[]>;
+  saveRun(organizationId: string, artifact: ScanArtifact): Promise<void>;
 }
 
 export function createApp(options: { stores: ApiStores; apiSecret: string; githubWebhookSecret: string; posthog?: PostHog | null }) {
@@ -25,28 +25,31 @@ export function createApp(options: { stores: ApiStores; apiSecret: string; githu
   app.get("/health", (context) => context.json({ status: "ok" }));
   app.use("/v1/*", async (context, next) => {
     if (context.req.header("authorization") !== `Bearer ${options.apiSecret}`) return context.json({ error: "unauthorized" }, 401);
+    if (!context.req.header("x-organization-id")) return context.json({ error: "organization_required" }, 400);
     await next();
   });
-  app.get("/v1/opportunities", async (context) => context.json({ opportunities: await options.stores.listOpportunities(context.req.query("siteId")) }));
-  app.get("/v1/sites", async (context) => context.json({ sites: await options.stores.listSites() }));
-  app.get("/v1/changes", async (context) => context.json({ changes: await options.stores.listChanges(context.req.query("siteId")) }));
-  app.get("/v1/pilot-scorecard", async (context) => context.json({ scorecard: calculatePilotScorecard(await options.stores.listChanges(context.req.query("siteId"))) }));
+  const organizationId = (context: { req: { header(name: string): string | undefined } }) => context.req.header("x-organization-id")!;
+  app.get("/v1/opportunities", async (context) => context.json({ opportunities: await options.stores.listOpportunities(organizationId(context), context.req.query("siteId")) }));
+  app.get("/v1/sites", async (context) => context.json({ sites: await options.stores.listSites(organizationId(context)) }));
+  app.get("/v1/changes", async (context) => context.json({ changes: await options.stores.listChanges(organizationId(context), context.req.query("siteId")) }));
+  app.get("/v1/pilot-scorecard", async (context) => context.json({ scorecard: calculatePilotScorecard(await options.stores.listChanges(organizationId(context), context.req.query("siteId"))) }));
   app.get("/v1/dashboard", async (context) => {
-    const sites = await options.stores.listSites();
+    const orgId = organizationId(context);
+    const sites = await options.stores.listSites(orgId);
     const requestedSiteId = context.req.query("siteId");
     if (requestedSiteId && !sites.some((site) => site.id === requestedSiteId)) return context.json({ error: "site_not_found" }, 404);
     const siteId = requestedSiteId ?? sites[0]?.id;
-    const [runs, changes] = await Promise.all([options.stores.listRecentRuns(30, siteId), options.stores.listChanges(siteId)]);
+    const [runs, changes] = await Promise.all([options.stores.listRecentRuns(orgId, 30, siteId), options.stores.listChanges(orgId, siteId)]);
     return context.json({ ...buildDashboard(runs, changes), siteId: siteId ?? null, sites });
   });
   app.get("/v1/changes/:id", async (context) => {
-    const change = await options.stores.changes.get(context.req.param("id"));
+    const change = (await options.stores.listChanges(organizationId(context))).find((item) => item.id === context.req.param("id"));
     return change ? context.json({ change }) : context.json({ error: "not_found" }, 404);
   });
   app.post("/v1/runs", async (context) => {
     const parsed = artifactEnvelopeSchema.safeParse(await context.req.json());
     if (!parsed.success) return context.json({ error: "invalid_scan_artifact", issues: parsed.error.issues }, 400);
-    await options.stores.saveRun(parsed.data as ScanArtifact);
+    await options.stores.saveRun(organizationId(context), parsed.data as ScanArtifact);
     options.posthog?.capture({
       event: "scan_artifact_received",
       properties: {

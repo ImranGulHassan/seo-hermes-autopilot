@@ -11,5 +11,5 @@ const pool = createPool({ connectionString: databaseUrl });
 await migrate(pool);
 const changes = new PostgresChangeLedger(pool);
 const runs = new PostgresRunStore(pool);
-const app = createApp({ stores: { changes, deliveries: new PostgresWebhookDeliveryStore(pool), listSites: () => runs.listSites(), listChanges: (siteId) => runs.listChanges(siteId), listOpportunities: (siteId) => runs.listOpportunities(siteId), listRecentRuns: (limit, siteId) => runs.listRecent(limit, siteId), saveRun: (artifact) => runs.save(artifact) }, apiSecret, githubWebhookSecret, posthog });
+const app = createApp({ stores: { changes, deliveries: new PostgresWebhookDeliveryStore(pool), listSites: (org) => runs.listSites(org), listChanges: (org, siteId) => runs.listChanges(org, siteId), listOpportunities: (org, siteId) => runs.listOpportunities(org, siteId), listRecentRuns: (org, limit, siteId) => runs.listRecent(org, limit, siteId), saveRun: (org, artifact) => runs.save(artifact, org) }, apiSecret, githubWebhookSecret, posthog });
 serve({ fetch: app.fetch, port: Number(process.env.PORT ?? 3000) });
