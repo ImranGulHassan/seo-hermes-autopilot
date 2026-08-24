@@ -1,0 +1,27 @@
+name: Runtime reconciliation
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: seo-autopilot-runtime-reconcile
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Trigger authenticated reconciliation
+        env:
+          CRON_SECRET: ${{ secrets.SEO_AUTOPILOT_CRON_SECRET }}
+        run: |
+          test -n "$CRON_SECRET"
+          curl --fail-with-body --retry 2 --retry-all-errors \
+            --header "Authorization: Bearer $CRON_SECRET" \
+            https://seo-autopilot-dun.vercel.app/api/cron/github-reconcile
