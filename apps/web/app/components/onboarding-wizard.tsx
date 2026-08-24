@@ -5,9 +5,10 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react
 export type ConnectorState = "not_connected" | "pending" | "healthy" | "error" | "skipped";
 export interface OnboardingStatus {
   organization?: { id: string; name: string; slug: string } | null;
+  sites?: Array<{ id: string; name: string; url: string }>;
   site?: { id: string; name: string; url: string } | null;
-  github?: { state: ConnectorState; repository?: string; installUrl?: string; message?: string } | null;
-  gsc?: { state: ConnectorState; property?: string; message?: string } | null;
+  github?: { state: ConnectorState; repository?: string; branch?: string; installUrl?: string; message?: string } | null;
+  gsc?: { state: ConnectorState; property?: string; properties?: Array<{siteUrl:string;permissionLevel?:string}>; message?: string } | null;
   posthog?: { state: ConnectorState; host?: string; message?: string } | null;
   configuration?: { branch: string; protectedPaths: string[]; saved?: boolean } | null;
   scan?: { state: "idle" | "queued" | "running" | "complete" | "error"; pages?: number; opportunities?: number; message?: string } | null;
@@ -18,8 +19,8 @@ export const ONBOARDING_STEPS = ["Workspace", "GitHub", "Search Console", "Conve
 export function completedSteps(status: OnboardingStatus): boolean[] {
   return [
     Boolean(status.organization && status.site),
-    status.github?.state === "healthy",
-    status.gsc?.state === "healthy",
+    status.github?.state === "healthy" && Boolean(status.github.repository && status.github.branch),
+    status.gsc?.state === "healthy" && Boolean(status.gsc.property),
     status.posthog?.state === "healthy" || status.posthog?.state === "skipped",
     status.configuration?.saved === true,
     status.scan?.state === "complete",
@@ -33,8 +34,9 @@ export function nextIncompleteStep(status: OnboardingStatus): number {
   return index < 0 ? completed.length - 1 : index;
 }
 
-async function request(path: string, body?: unknown): Promise<OnboardingStatus> {
-  const response = await fetch(`/api/v1/onboarding${path}`, {
+async function request(path: string, body?: unknown, siteId?: string): Promise<OnboardingStatus> {
+  const query = body === undefined && siteId ? `?siteId=${encodeURIComponent(siteId)}` : "";
+  const response = await fetch(`/api/v1/onboarding${path}${query}`, {
     method: body === undefined ? "GET" : "POST",
     credentials: "same-origin",
     headers: body === undefined ? undefined : { "content-type": "application/json" },
@@ -68,20 +70,23 @@ export function OnboardingWizard({ ownerName, organizationName, initialError }: 
   const [step, setStep] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(initialError ?? null);
+  const [siteId, setSiteId] = useState("");
   const completed = useMemo(() => completedSteps(status), [status]);
 
   const refresh = useCallback(async () => {
     try {
-      const fresh = await request("");
+      const requested = new URLSearchParams(window.location.search).get("siteId") ?? undefined;
+      const fresh = await request("", undefined, requested);
+      setSiteId(fresh.site?.id ?? "");
       setStatus(fresh);
       setStep(nextIncompleteStep(fresh));
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not load onboarding status."); }
   }, []);
   useEffect(() => { void refresh(); }, [refresh]);
 
-  async function submit(path: string, body: unknown) {
+  async function submit(path: string, body: Record<string, unknown>) {
     setBusy(true); setError(null);
-    try { const fresh = await request(path, body); setStatus(fresh); setStep(nextIncompleteStep(fresh)); }
+    try { const fresh = await request(path, {...body, siteId}); setStatus(fresh); setStep(nextIncompleteStep(fresh)); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "This step could not be saved."); }
     finally { setBusy(false); }
   }
@@ -91,6 +96,7 @@ export function OnboardingWizard({ ownerName, organizationName, initialError }: 
     try {
       await request("/organization", {name:value.organizationName,slug:value.slug});
       const fresh = await request("/site", {name:value.siteName,url:value.url});
+      setSiteId(fresh.site?.id ?? "");
       setStatus(fresh); setStep(nextIncompleteStep(fresh));
     } catch (reason) { setError(reason instanceof Error ? reason.message : "The workspace could not be created."); }
     finally { setBusy(false); }
@@ -109,10 +115,11 @@ export function OnboardingWizard({ ownerName, organizationName, initialError }: 
         </button>)}
       </aside>
       <section className="onboarding-card">
+        {status.sites?.length ? <label className="onboarding-site-picker">Site being configured<select value={siteId} disabled={busy} onChange={async (event) => { const selected=event.target.value; if(!selected)return; setSiteId(selected); setBusy(true); setError(null); try { const fresh=await request("",undefined,selected); setStatus(fresh); setStep(nextIncompleteStep(fresh)); window.history.replaceState(null,"",`/onboarding?siteId=${encodeURIComponent(selected)}`); } catch(reason) { setError(reason instanceof Error?reason.message:"Could not select site."); } finally { setBusy(false); } }}><option value="" disabled>Select a site</option>{status.sites.map(site=><option value={site.id} key={site.id}>{site.name} — {site.url}</option>)}</select></label> : null}
         {error && <div className="onboarding-error" role="alert"><strong>Setup needs attention</strong><span>{error}</span><button onClick={() => void refresh()}>Retry status check</button></div>}
         {step === 0 && <SimpleForm title="Create your workspace" intro="Name the organization and first site your team will monitor." submit="Save workspace" busy={busy} fields={[['organizationName','Organization name',status.organization?.name ?? organizationName],['slug','Organization slug',status.organization?.slug ?? ''],['siteName','Site name',status.site?.name ?? ''],['url','Production URL',status.site?.url ?? 'https://']]} onSubmit={submitWorkspace} />}
-        {step === 1 && <SimpleForm title="Connect GitHub" intro="Choose the repository where SEO Autopilot may inspect source and prepare reviewable pull requests." submit="Connect and verify repository" busy={busy} fields={[['repository','Repository (owner/name)',status.github?.repository ?? ''],['installationId','Installation ID (optional)','']]} optional={['installationId']} onSubmit={(v) => submit("/github", v)}><StateBadge state={status.github?.state}/>{status.github?.message && <p className="onboarding-hint">{status.github.message}</p>}{status.github?.installUrl&&<a className="onboarding-secondary" href={status.github.installUrl} target="_blank" rel="noreferrer">Install or configure the GitHub App ↗</a>}<p className="onboarding-note">Install the App for the selected repository, then enter its installation ID if it differs from the default installation.</p></SimpleForm>}
-        {step === 2 && <div><StepHeading title="Connect Google Search Console" intro="Authorize read-only access to search performance and indexed-page data."/><StateBadge state={status.gsc?.state}/>{status.gsc?.property && <p className="onboarding-hint">Property: {status.gsc.property}</p>}<a className="onboarding-primary" href="/api/v1/onboarding/google/start">Connect Google Search Console</a><p className="onboarding-note">You will return here after Google authorization. SEO Autopilot requests only the access needed to read your Search Console data.</p></div>}
+        {step === 1 && <SimpleForm title="Connect GitHub" intro="Choose the repository and branch for this site." submit="Connect and verify repository" busy={busy} fields={[['repository','Repository (owner/name)',status.github?.repository ?? ''],['branch','Repository branch',status.github?.branch ?? 'main'],['installationId','Installation ID (optional)','']]} optional={['installationId']} onSubmit={(v) => submit("/github", v)}><StateBadge state={status.github?.state}/>{status.github?.message && <p className="onboarding-hint">{status.github.message}</p>}{status.github?.installUrl&&<a className="onboarding-secondary" href={status.github.installUrl} target="_blank" rel="noreferrer">Install or configure the GitHub App ↗</a>}</SimpleForm>}
+        {step === 2 && <GscStep status={status} siteId={siteId} busy={busy} onSelect={(property)=>submit("/gsc-property",{property})}/>}
         {step === 3 && <SimpleForm title="Configure conversions (optional)" intro="Use PostHog landing-page conversions to prioritize fixes by business value." submit="Verify PostHog" busy={busy} fields={[['host','PostHog host',status.posthog?.host ?? 'https://us.posthog.com'],['projectId','Project ID',''],['apiKey','Personal API key','']]} secret="apiKey" onSubmit={(v) => submit("/posthog", v)}><StateBadge state={status.posthog?.state}/><button className="onboarding-secondary" disabled={busy} onClick={() => void submit("/posthog", { skip: true })}>Skip conversions</button></SimpleForm>}
         {step === 4 && <ConfigurationForm status={status} busy={busy} onSubmit={(value) => submit("/configuration", value)} />}
         {step === 5 && <div><StepHeading title="Run the first read-only scan" intro="Crawl the site, inspect repository metadata, and collect evidence. This scan cannot modify code or open a pull request."/><StateBadge state={status.scan?.state}/>{status.scan?.message && <p className="onboarding-hint">{status.scan.message}</p>}<button className="onboarding-primary" disabled={busy || status.scan?.state === "running" || status.scan?.state === "queued"} onClick={() => void submit("/scan", {})}>{busy ? "Starting…" : "Run read-only scan"}</button></div>}
@@ -124,12 +131,18 @@ export function OnboardingWizard({ ownerName, organizationName, initialError }: 
 
 function StepHeading({ title, intro }: { title: string; intro: string }) { return <><p className="eyebrow">Onboarding</p><h2>{title}</h2><p className="onboarding-intro">{intro}</p></>; }
 
+function GscStep({status,siteId,busy,onSelect}:{status:OnboardingStatus;siteId:string;busy:boolean;onSelect:(property:string)=>void}) {
+  const properties=status.gsc?.properties ?? [];
+  function handle(event:FormEvent<HTMLFormElement>) { event.preventDefault(); onSelect(String(new FormData(event.currentTarget).get("property") ?? "")); }
+  return <div><StepHeading title="Connect Google Search Console" intro="Authorize Google, then explicitly choose the property for this site."/><StateBadge state={status.gsc?.state}/><a className="onboarding-primary" href={`/api/v1/onboarding/google/start?siteId=${encodeURIComponent(siteId)}`}>Connect or change Google account</a>{properties.length?<form className="onboarding-form" onSubmit={handle}><label>Search Console property<select name="property" defaultValue={status.gsc?.property ?? ""} required><option value="" disabled>Select a property</option>{properties.map(item=><option value={item.siteUrl} key={item.siteUrl}>{item.siteUrl}</option>)}</select></label><button className="onboarding-primary" disabled={busy}>Save property for this site</button></form>:<p className="onboarding-note">Connect Google to load the properties available to that account.</p>}</div>;
+}
+
 function SimpleForm({ title, intro, submit: label, busy, fields, secret, optional = [], onSubmit, children }: { title:string; intro:string; submit:string; busy:boolean; fields:string[][]; secret?:string; optional?:string[]; onSubmit:(value:Record<string,string>)=>void; children?:React.ReactNode }) {
   function handle(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const data = new FormData(event.currentTarget); onSubmit(Object.fromEntries(data.entries()) as Record<string,string>); }
   return <form className="onboarding-form" onSubmit={handle}><StepHeading title={title} intro={intro}/>{children}<div className="onboarding-fields">{fields.map(([name,label,value]) => <label key={name}>{label}<input name={name} defaultValue={value} type={secret === name ? "password" : name === "url" ? "url" : "text"} required={!optional.includes(name) && name !== 'apiKey'} autoComplete="off"/></label>)}</div><button className="onboarding-primary" disabled={busy}>{busy ? "Saving…" : label}</button></form>;
 }
 
-function ConfigurationForm({ status, busy, onSubmit }: {status:OnboardingStatus; busy:boolean; onSubmit:(v:unknown)=>void}) {
+function ConfigurationForm({ status, busy, onSubmit }: {status:OnboardingStatus; busy:boolean; onSubmit:(v:Record<string,unknown>)=>void}) {
   function handle(event:FormEvent<HTMLFormElement>) { event.preventDefault(); const data=new FormData(event.currentTarget); onSubmit({branch:data.get('branch'),protectedPaths:String(data.get('protectedPaths')??'').split('\n').map(v=>v.trim()).filter(Boolean)}); }
   return <form className="onboarding-form" onSubmit={handle}><StepHeading title="Set repository safety rules" intro="Choose the deployment branch and paths that the agent must never change without explicit approval."/><label>Default branch<input name="branch" defaultValue={status.configuration?.branch ?? "main"} required/></label><label>Protected paths (one per line)<textarea name="protectedPaths" rows={7} defaultValue={(status.configuration?.protectedPaths ?? ["app/api/**","middleware.ts","next.config.*"]).join('\n')}/></label><button className="onboarding-primary" disabled={busy}>{busy?'Saving…':'Save safety rules'}</button></form>;
 }

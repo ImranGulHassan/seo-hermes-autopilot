@@ -36,7 +36,7 @@ export async function onboardingStatus(session: StoredSession, requestedSiteId?:
     runtime.tenants.listSiteOnboarding(session.organizationId),
     runtime.pool.query<{ id: string; name: string; slug: string | null }>("SELECT id,name,slug FROM organizations WHERE id=$1", [session.organizationId])
   ]);
-  const site = sites.find((item) => item.id === requestedSiteId) ?? sites.find((item) => onboardingRows.some((row) => row.siteId === item.id)) ?? sites[0];
+  const site = requestedSiteId ? sites.find((item) => item.id === requestedSiteId) : undefined;
   const onboarding = site ? onboardingRows.find((row) => row.siteId === site.id) : undefined;
   const connector = (provider: "github" | "google-search-console" | "posthog") => connectors.find((item) => item.provider === provider);
   const github = connector("github"), gsc = connector("google-search-console"), posthog = connector("posthog");
@@ -46,7 +46,7 @@ export async function onboardingStatus(session: StoredSession, requestedSiteId?:
     sites: sites.map((item) => ({ id: item.id, name: new URL(item.url).hostname, url: item.url })),
     site: site ? { id: site.id, name: new URL(site.url).hostname, url: site.url } : null,
     github: { status: github?.status ?? "disconnected", repository: onboarding?.githubOwner && onboarding.githubRepository ? `${onboarding.githubOwner}/${onboarding.githubRepository}` : undefined, branch: onboarding?.githubBranch ?? "main", installUrl: process.env.GITHUB_APP_SLUG ? `https://github.com/apps/${process.env.GITHUB_APP_SLUG}/installations/new` : undefined, error: github?.errorMessage ?? undefined, action: github?.health.action },
-    gsc: { status: gsc?.status ?? "disconnected", property: onboarding?.gscProperty ?? undefined, error: gsc?.errorMessage ?? undefined, action: gsc?.health.action },
+    gsc: { status: gsc?.status ?? "disconnected", property: onboarding?.gscProperty ?? undefined, properties: Array.isArray(gsc?.health.properties) ? gsc.health.properties : [], error: gsc?.errorMessage ?? undefined, action: gsc?.health.action },
     posthog: { status: posthog?.health.skipped ? "skipped" : posthog?.status ?? "disconnected", projectId: onboarding?.posthogProjectId ?? undefined, host: posthog?.health.host, error: posthog?.errorMessage ?? undefined, action: posthog?.health.action },
     configuration: { branch: onboarding?.githubBranch ?? "main", protectedPaths: onboarding?.protectedPaths?.length ? onboarding.protectedPaths : ["app/api/**", "middleware.ts", "next.config.*"], saved: onboarding ? ["scan", "complete"].includes(onboarding.state) : false },
     scan: { state: onboarding?.scanState ?? "not-started", runId: onboarding?.scanRunId ?? undefined, pages: latest?.pages.length, opportunities: latest?.opportunities.length, error: onboarding?.errorMessage ?? undefined },
