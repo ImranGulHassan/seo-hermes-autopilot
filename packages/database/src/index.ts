@@ -1,5 +1,3 @@
-import { readFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
 import { Pool, type PoolConfig, type QueryResult, type QueryResultRow } from "pg";
 import type { ChangeLedger, ChangeRecord, Opportunity, ScanArtifact } from "@seo-autopilot/core";
 import type { WebhookDeliveryStore } from "@seo-autopilot/connectors";
@@ -12,9 +10,45 @@ export function createPool(config: PoolConfig = {}): Pool { return new Pool(conf
 export function siteIdForUrl(siteUrl: string): string { return `site_${Buffer.from(siteUrl).toString("base64url").slice(0, 32)}`; }
 
 export async function migrate(database: Queryable): Promise<void> {
-  const sql = await readFile(fileURLToPath(new URL("../migrations/001_initial.sql", import.meta.url)), "utf8");
-  await database.query(sql);
+  await database.query(INITIAL_MIGRATION);
 }
+
+const INITIAL_MIGRATION = `
+CREATE TABLE IF NOT EXISTS sites (
+  id text PRIMARY KEY, url text NOT NULL UNIQUE,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS runs (
+  id text PRIMARY KEY, site_id text NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+  started_at timestamptz NOT NULL, completed_at timestamptz NOT NULL,
+  data_state text NOT NULL, artifact jsonb NOT NULL
+);
+ALTER TABLE runs DROP CONSTRAINT IF EXISTS runs_data_state_check;
+ALTER TABLE runs ADD CONSTRAINT runs_data_state_check
+  CHECK (data_state IN ('technical-only', 'search-performance', 'analytics-enriched'));
+CREATE TABLE IF NOT EXISTS opportunities (
+  id text PRIMARY KEY, site_id text NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+  fingerprint text NOT NULL, type text NOT NULL, estimated_value double precision NOT NULL,
+  payload jsonb NOT NULL, first_seen_at timestamptz NOT NULL DEFAULT now(),
+  last_seen_at timestamptz NOT NULL DEFAULT now(), UNIQUE (site_id, fingerprint)
+);
+CREATE TABLE IF NOT EXISTS changes (
+  id text PRIMARY KEY, site_id text REFERENCES sites(id) ON DELETE CASCADE,
+  opportunity_id text NOT NULL, fingerprint text NOT NULL, state text NOT NULL,
+  github_owner text, github_repository text, github_pr_number integer,
+  github_head_branch text, payload jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE NULLS NOT DISTINCT (github_owner, github_repository, github_pr_number)
+);
+ALTER TABLE changes ADD COLUMN IF NOT EXISTS site_id text REFERENCES sites(id) ON DELETE CASCADE;
+UPDATE changes c SET site_id = o.site_id FROM opportunities o
+WHERE c.opportunity_id = o.id AND c.site_id IS NULL;
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+  delivery_id text PRIMARY KEY, received_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS opportunities_site_value_idx ON opportunities(site_id, estimated_value DESC);
+CREATE INDEX IF NOT EXISTS changes_state_idx ON changes(state);
+CREATE INDEX IF NOT EXISTS changes_site_state_idx ON changes(site_id, state);
+`;
 
 export class PostgresChangeLedger implements ChangeLedger {
   constructor(private readonly database: Queryable, private readonly siteId?: string) {}

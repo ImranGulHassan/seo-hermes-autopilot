@@ -1,0 +1,9 @@
+.git
+.seo-autopilot
+.env*
+.vercel
+**/.next
+**/dist
+**/node_modules
+**/*.tsbuildinfo
+coverage

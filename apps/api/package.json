@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "exports": { ".": { "types": "./src/app.ts", "development": "./src/app.ts", "default": "./dist/app.js" } },
+  "main": "./dist/app.js",
+  "types": "./dist/app.d.ts",
   "scripts": { "start": "tsx src/server.ts", "build": "tsc -p tsconfig.json", "typecheck": "tsc -p tsconfig.json --noEmit", "test": "node --import tsx --test test/*.test.ts" },
   "dependencies": {
     "@hono/node-server": "^1.13.7",
