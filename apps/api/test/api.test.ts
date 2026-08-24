@@ -63,3 +63,11 @@ test("dashboard reports real GSC movement, low CTR, freshness and connector stat
   assert.equal(body.connectors.conversions.state, "not-configured");
   assert.equal(body.freshness.state, "fresh");
 });
+
+test("pilot readiness requires five partners and three active converted users", async () => {
+  const partners = Array.from({ length: 5 }, (_, index) => ({ id: `p${index}`, status: "active", convertedAt: index < 3 ? "2026-08-24T00:00:00.000Z" : null, conversionIntent: index < 3 ? "yes" : "unknown", weeklyFeedback: [{ activeUse: index < 3 }] }));
+  const app = createApp({ stores: { changes: new InMemoryChangeLedger(), deliveries: new InMemoryWebhookDeliveryStore(), listSites: async () => [], listChanges: async () => [], listOpportunities: async () => [], listRecentRuns: async () => [], saveRun: async () => {}, listDesignPartners: async () => partners }, apiSecret: "api-secret", githubWebhookSecret: "hook-secret" });
+  const response = await app.request("/v1/pilot-readiness", { headers: { authorization: "Bearer api-secret", "x-organization-id": "org_one" } });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).gates.launchReady, true);
+});

@@ -16,7 +16,8 @@ export async function executeRuntimeJob(name: RuntimeJobName) {
   const owner = randomUUID();
   if (!(await jobs.acquire(name, owner, 14 * 60))) return { status: "leased" as const };
   try {
-    const result = await withRetries(() => name === "daily-scan" ? dailyScans() : name === "github-reconcile" ? githubReconcile() : measurements());
+    const operation: () => Promise<unknown> = name === "daily-scan" ? dailyScans : name === "github-reconcile" ? githubReconcile : measurements;
+    const result = await withRetries(operation);
     await jobs.succeed(name, owner);
     return { status: "succeeded" as const, result };
   } catch (error) {

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { migrate, PostgresChangeLedger, PostgresRunStore, PostgresRuntimeJobStore, PostgresTenantStore, PostgresWebhookDeliveryStore, type Queryable } from "../src/index.js";
+import { migrate, PostgresChangeLedger, PostgresDesignPartnerStore, PostgresRunStore, PostgresRuntimeJobStore, PostgresTenantStore, PostgresWebhookDeliveryStore, type Queryable } from "../src/index.js";
 import type { ChangeRecord } from "@seo-autopilot/core";
 
 test("change ledger persists provider identifiers and serialized immutable baseline", async () => {
@@ -62,7 +62,19 @@ test("migration permits analytics-enriched scan artifacts", async () => {
   assert.match(sql, /CREATE TABLE IF NOT EXISTS organization_connectors/);
   assert.match(sql, /CREATE TABLE IF NOT EXISTS site_onboarding/);
   assert.match(sql, /CREATE TABLE IF NOT EXISTS runtime_jobs/);
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS design_partners/);
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS operations_audit/);
   assert.match(sql, /FOREIGN KEY \(site_id, organization_id\) REFERENCES sites\(id, organization_id\)/);
+});
+
+test("design-partner reads and feedback remain organization scoped", async () => {
+  const calls: Array<{ sql: string; values?: unknown[] }> = [];
+  const database: Queryable = { query: async (sql, values) => { calls.push({ sql, ...(values ? { values } : {}) }); return { rows: [], rowCount: 0, command: "", oid: 0, fields: [] }; } };
+  const partners = new PostgresDesignPartnerStore(database);
+  assert.deepEqual(await partners.list("org_one"), []);
+  await assert.rejects(partners.recordFeedback({ organizationId: "org_one", partnerId: "partner_other", week: "2026-W34", note: "Useful", activeUse: true, actorUserId: null }), /not found/);
+  assert.match(calls[0]!.sql, /organization_id=\$1/);
+  assert.deepEqual(calls[1]!.values?.slice(0, 2), ["partner_other", "org_one"]);
 });
 
 test("runtime jobs acquire a durable lease and only its owner can finish it", async () => {

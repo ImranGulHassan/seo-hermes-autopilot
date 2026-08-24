@@ -1,5 +1,5 @@
 import { completedSearchWindow, enrichWithConversions, GoogleOAuthTokenProvider, GoogleSearchConsoleClient, PostHogConversionClient } from "@seo-autopilot/connectors";
-import { crawlSite, runDetectors, stableId, type ScanArtifact } from "@seo-autopilot/core";
+import { analyzeDetectors, crawlSite, stableId, type ScanArtifact } from "@seo-autopilot/core";
 import { createPool, migrate, PostgresRunStore, PostgresTenantStore } from "@seo-autopilot/database";
 import { NextResponse } from "next/server";
 import { currentSession, hasMinimumRole } from "../auth/session";
@@ -94,11 +94,12 @@ export async function runFirstScan(session: StoredSession, siteId: string): Prom
       await runtime.tenants.upsertConnector({ organizationId: session.organizationId, provider: "posthog", status: "error", errorCode: "scan-verification-failed", errorMessage: message, health: { action: "Verify the PostHog project, event, and API key, then retry." } });
     }
   }
+  const detectorResult = analyzeDetectors({ pages: crawl.pages, metrics, sitemapUrls: crawl.sitemapUrls });
   const artifact: ScanArtifact = {
     schemaVersion: 1, runId: `run_${stableId([site.url, startedAt.toISOString()])}`, startedAt: startedAt.toISOString(), completedAt: new Date().toISOString(), siteUrl: site.url,
     dataState: metrics.length ? (analyticsState === "enriched" ? "analytics-enriched" : "search-performance") : "technical-only", analyticsState,
     ...(metrics.length ? { metricWindow } : {}), pages: crawl.pages, metrics, queryMetrics, sitemapUrls: crawl.sitemapUrls, errors,
-    opportunities: runDetectors({ pages: crawl.pages, metrics, sitemapUrls: crawl.sitemapUrls })
+    opportunities: detectorResult.opportunities, detectorDiagnostics: detectorResult.diagnostics
   };
   await runtime.runs.save(artifact, session.organizationId);
   return artifact;
