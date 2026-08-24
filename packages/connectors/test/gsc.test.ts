@@ -8,6 +8,8 @@ test("signs OAuth state, builds the consent URL, and rejects expired state", () 
   assert.equal(verifyGoogleOAuthState(state, secret, new Date("2026-01-01T00:05:00Z")).organizationId, "org_1");
   const url = new URL(googleOAuthAuthorizationUrl({ clientId: "client", redirectUri: "https://app.test/oauth/callback", state }));
   assert.equal(url.searchParams.get("access_type"), "offline");
+  assert.equal(url.searchParams.get("prompt"), "consent select_account");
+  assert.equal(url.searchParams.has("login_hint"), false);
   assert.match(url.searchParams.get("scope") ?? "", /webmasters\.readonly/);
   assert.throws(() => verifyGoogleOAuthState(state, secret, new Date("2026-01-01T00:11:00Z")), (error: unknown) => error instanceof ConnectorError && error.code === "expired-state");
 });

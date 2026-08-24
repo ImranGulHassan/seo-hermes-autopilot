@@ -59,7 +59,7 @@ export function verifyGoogleOAuthState(state: string, secret: string, now = new 
 export function googleOAuthAuthorizationUrl(input: { clientId: string; redirectUri: string; state: string; loginHint?: string; authorizationEndpoint?: string }): string {
   if (!input.clientId.trim() || !input.redirectUri.trim() || !input.state.trim()) throw new ConnectorError("google-search-console", "invalid-config", "Google OAuth client ID, redirect URI, and state are required.", "Complete the Google OAuth configuration.");
   const url = new URL(input.authorizationEndpoint ?? "https://accounts.google.com/o/oauth2/v2/auth");
-  url.search = new URLSearchParams({ client_id: input.clientId, redirect_uri: input.redirectUri, response_type: "code", scope: GSC_OAUTH_SCOPES.join(" "), access_type: "offline", prompt: "consent", state: input.state, ...(input.loginHint ? { login_hint: input.loginHint } : {}) }).toString();
+  url.search = new URLSearchParams({ client_id: input.clientId, redirect_uri: input.redirectUri, response_type: "code", scope: GSC_OAUTH_SCOPES.join(" "), access_type: "offline", prompt: "consent select_account", state: input.state, ...(input.loginHint ? { login_hint: input.loginHint } : {}) }).toString();
   return url.toString();
 }
 
