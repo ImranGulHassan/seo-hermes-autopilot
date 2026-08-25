@@ -1,5 +1,6 @@
 import { ConnectorError, GitHubAppAuthenticator, verifyGitHubRepository, verifyPostHogConnection } from "@seo-autopilot/connectors";
 import { randomBytes } from "node:crypto";
+import { PostgresBillingStore } from "@seo-autopilot/database";
 import { NextResponse } from "next/server";
 import { issueSession } from "../../../../../lib/auth/session";
 import { isSameOrigin } from "../../../../../lib/auth/request";
@@ -31,6 +32,8 @@ export async function POST(request: Request, context: { params: Promise<{ action
     } else if (action === "site") {
       const url = new URL(text(body.url, "Production URL"));
       if (!['http:', 'https:'].includes(url.protocol)) throw new Error("Production URL must use HTTP or HTTPS.");
+      const entitlement = await new PostgresBillingStore(runtime.pool).entitlement(session.organizationId);
+      if (!entitlement.canAddSite) throw new Error(`Your ${entitlement.billing.plan} plan allows ${entitlement.billing.siteLimit} sites. Upgrade before adding another site.`);
       const site = await runtime.tenants.createSite({ organizationId: session.organizationId, url: url.origin });
       responseSiteId = site.id;
       await runtime.tenants.upsertSiteOnboarding({ organizationId: session.organizationId, siteId: site.id, state: "github" });
