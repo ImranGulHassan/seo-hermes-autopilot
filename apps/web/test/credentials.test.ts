@@ -7,5 +7,7 @@ test("connector credentials are authenticated, encrypted envelopes", () => {
   const envelope = encryptCredential("refresh-secret");
   assert.ok(!envelope.includes("refresh-secret"));
   assert.equal(decryptCredential(envelope), "refresh-secret");
-  assert.throws(() => decryptCredential(`${envelope.slice(0, -1)}x`), /could not be decrypted/);
+  const [version, iv, tag, ciphertext] = envelope.split(".");
+  const tampered = `${version}.${iv}.${tag}.${ciphertext?.startsWith("A") ? "B" : "A"}${ciphertext?.slice(1)}`;
+  assert.throws(() => decryptCredential(tampered), /could not be decrypted/);
 });

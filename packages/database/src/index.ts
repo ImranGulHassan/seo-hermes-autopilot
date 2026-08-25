@@ -41,6 +41,14 @@ export interface DesignPartnerRecord {
   weeklyFeedback: Array<{ week: string; note: string; activeUse: boolean; recordedAt: string }>;
   createdAt: string; updatedAt: string;
 }
+export type BillingPlan = "design-partner" | "starter" | "growth" | "team";
+export type BillingStatus = "trialing" | "active" | "past_due" | "canceled" | "unpaid" | "incomplete" | "paused";
+export interface BillingRecord {
+  organizationId: string; plan: BillingPlan; status: BillingStatus;
+  stripeCustomerId: string | null; stripeSubscriptionId: string | null; stripePriceId: string | null;
+  currentPeriodStart: string | null; currentPeriodEnd: string | null; cancelAtPeriodEnd: boolean;
+  siteLimit: number; monthlyPrLimit: number; updatedAt: string;
+}
 
 export async function migrate(database: Queryable): Promise<void> {
   await database.query(INITIAL_MIGRATION);
@@ -157,6 +165,23 @@ CREATE TABLE IF NOT EXISTS operations_audit (
   subject_id text NOT NULL, details jsonb NOT NULL DEFAULT '{}'::jsonb, created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS operations_audit_org_created_idx ON operations_audit(organization_id,created_at DESC);
+CREATE TABLE IF NOT EXISTS organization_billing (
+  organization_id text PRIMARY KEY REFERENCES organizations(id) ON DELETE CASCADE,
+  plan text NOT NULL DEFAULT 'design-partner' CHECK (plan IN ('design-partner','starter','growth','team')),
+  status text NOT NULL DEFAULT 'trialing' CHECK (status IN ('trialing','active','past_due','canceled','unpaid','incomplete','paused')),
+  stripe_customer_id text UNIQUE, stripe_subscription_id text UNIQUE, stripe_price_id text,
+  current_period_start timestamptz, current_period_end timestamptz, cancel_at_period_end boolean NOT NULL DEFAULT false,
+  site_limit integer NOT NULL DEFAULT 5 CHECK (site_limit>0), monthly_pr_limit integer NOT NULL DEFAULT 50 CHECK (monthly_pr_limit>=0),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS stripe_webhook_events (
+  event_id text PRIMARY KEY, event_type text NOT NULL, received_at timestamptz NOT NULL DEFAULT now(), processed_at timestamptz
+);
+CREATE TABLE IF NOT EXISTS billing_usage (
+  organization_id text NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  period_start date NOT NULL, pull_requests integer NOT NULL DEFAULT 0 CHECK (pull_requests>=0),
+  PRIMARY KEY(organization_id,period_start)
+);
 `;
 
 function iso(value: Date | string): string { return new Date(value).toISOString(); }
@@ -415,6 +440,46 @@ function partnerRecord(row: any): DesignPartnerRecord {
     publicationPermission: row.publication_permission, conversionIntent: row.conversion_intent, convertedAt: row.converted_at ? iso(row.converted_at) : null,
     weeklyFeedback: row.weekly_feedback ?? [], createdAt: iso(row.created_at), updatedAt: iso(row.updated_at) };
 }
+
+export const BILLING_LIMITS: Record<BillingPlan, { sites: number; monthlyPullRequests: number }> = {
+  "design-partner": { sites: 5, monthlyPullRequests: 50 }, starter: { sites: 1, monthlyPullRequests: 10 },
+  growth: { sites: 5, monthlyPullRequests: 50 }, team: { sites: 25, monthlyPullRequests: 200 }
+};
+
+export class PostgresBillingStore {
+  constructor(private readonly database: Queryable) {}
+  async get(organizationId: string): Promise<BillingRecord | undefined> {
+    const row = (await this.database.query<any>("SELECT * FROM organization_billing WHERE organization_id=$1", [organizationId])).rows[0];
+    return row ? billingRecord(row) : undefined;
+  }
+  async ensureDesignPartner(organizationId: string): Promise<BillingRecord> {
+    const limits = BILLING_LIMITS["design-partner"];
+    const row = (await this.database.query<any>(`INSERT INTO organization_billing(organization_id,plan,status,site_limit,monthly_pr_limit)
+      SELECT $1,'design-partner','trialing',$2,$3 WHERE EXISTS(SELECT 1 FROM organizations WHERE id=$1)
+      ON CONFLICT(organization_id) DO UPDATE SET organization_id=EXCLUDED.organization_id RETURNING *`, [organizationId,limits.sites,limits.monthlyPullRequests])).rows[0];
+    if (!row) throw new Error("Organization not found"); return billingRecord(row);
+  }
+  async reconcile(input: { eventId: string; eventType: string; organizationId: string; plan: BillingPlan; status: BillingStatus; customerId: string | null; subscriptionId: string | null; priceId: string | null; currentPeriodStart?: string | null; currentPeriodEnd?: string | null; cancelAtPeriodEnd?: boolean }): Promise<boolean> {
+    const limits = BILLING_LIMITS[input.plan];
+    const result = await this.database.query<any>(`WITH claimed AS (
+      INSERT INTO stripe_webhook_events(event_id,event_type) VALUES($1,$2) ON CONFLICT DO NOTHING RETURNING event_id
+    ), saved AS (
+      INSERT INTO organization_billing(organization_id,plan,status,stripe_customer_id,stripe_subscription_id,stripe_price_id,current_period_start,current_period_end,cancel_at_period_end,site_limit,monthly_pr_limit)
+      SELECT $3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13 FROM claimed WHERE EXISTS(SELECT 1 FROM organizations WHERE id=$3)
+      ON CONFLICT(organization_id) DO UPDATE SET plan=EXCLUDED.plan,status=EXCLUDED.status,stripe_customer_id=COALESCE(EXCLUDED.stripe_customer_id,organization_billing.stripe_customer_id),stripe_subscription_id=COALESCE(EXCLUDED.stripe_subscription_id,organization_billing.stripe_subscription_id),stripe_price_id=COALESCE(EXCLUDED.stripe_price_id,organization_billing.stripe_price_id),current_period_start=COALESCE(EXCLUDED.current_period_start,organization_billing.current_period_start),current_period_end=COALESCE(EXCLUDED.current_period_end,organization_billing.current_period_end),cancel_at_period_end=EXCLUDED.cancel_at_period_end,site_limit=EXCLUDED.site_limit,monthly_pr_limit=EXCLUDED.monthly_pr_limit,updated_at=now() RETURNING organization_id
+    ) UPDATE stripe_webhook_events SET processed_at=now() WHERE event_id=$1 AND EXISTS(SELECT 1 FROM saved) RETURNING event_id`, [input.eventId,input.eventType,input.organizationId,input.plan,input.status,input.customerId,input.subscriptionId,input.priceId,input.currentPeriodStart ?? null,input.currentPeriodEnd ?? null,input.cancelAtPeriodEnd ?? false,limits.sites,limits.monthlyPullRequests]);
+    return result.rowCount === 1;
+  }
+  async entitlement(organizationId: string): Promise<{ billing: BillingRecord; sitesUsed: number; pullRequestsUsed: number; canAddSite: boolean; canOpenPullRequest: boolean }> {
+    const billing = await this.get(organizationId) ?? await this.ensureDesignPartner(organizationId);
+    const sitesUsed = Number((await this.database.query<{ count: string }>("SELECT count(*)::text count FROM sites WHERE organization_id=$1", [organizationId])).rows[0]?.count ?? 0);
+    const pullRequestsUsed = Number((await this.database.query<{ count: string }>(`SELECT count(*)::text count FROM changes c JOIN sites s ON s.id=c.site_id WHERE s.organization_id=$1 AND c.github_pr_number IS NOT NULL AND c.updated_at>=date_trunc('month',now())`, [organizationId])).rows[0]?.count ?? 0);
+    const paid = ["active","trialing"].includes(billing.status);
+    return { billing, sitesUsed, pullRequestsUsed, canAddSite: paid && sitesUsed < billing.siteLimit, canOpenPullRequest: paid && pullRequestsUsed < billing.monthlyPrLimit };
+  }
+}
+
+function billingRecord(row: any): BillingRecord { return { organizationId: row.organization_id, plan: row.plan, status: row.status, stripeCustomerId: row.stripe_customer_id, stripeSubscriptionId: row.stripe_subscription_id, stripePriceId: row.stripe_price_id, currentPeriodStart: row.current_period_start ? iso(row.current_period_start) : null, currentPeriodEnd: row.current_period_end ? iso(row.current_period_end) : null, cancelAtPeriodEnd: row.cancel_at_period_end, siteLimit: row.site_limit, monthlyPrLimit: row.monthly_pr_limit, updatedAt: iso(row.updated_at) }; }
 
 export class PostgresRuntimeJobStore {
   constructor(private readonly database: Queryable) {}

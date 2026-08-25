@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { migrate, PostgresChangeLedger, PostgresDesignPartnerStore, PostgresRunStore, PostgresRuntimeJobStore, PostgresTenantStore, PostgresWebhookDeliveryStore, type Queryable } from "../src/index.js";
+import { migrate, PostgresBillingStore, PostgresChangeLedger, PostgresDesignPartnerStore, PostgresRunStore, PostgresRuntimeJobStore, PostgresTenantStore, PostgresWebhookDeliveryStore, type Queryable } from "../src/index.js";
 import type { ChangeRecord } from "@seo-autopilot/core";
 
 test("change ledger persists provider identifiers and serialized immutable baseline", async () => {
@@ -64,7 +64,20 @@ test("migration permits analytics-enriched scan artifacts", async () => {
   assert.match(sql, /CREATE TABLE IF NOT EXISTS runtime_jobs/);
   assert.match(sql, /CREATE TABLE IF NOT EXISTS design_partners/);
   assert.match(sql, /CREATE TABLE IF NOT EXISTS operations_audit/);
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS organization_billing/);
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS stripe_webhook_events/);
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS billing_usage/);
   assert.match(sql, /FOREIGN KEY \(site_id, organization_id\) REFERENCES sites\(id, organization_id\)/);
+});
+
+test("Stripe reconciliation claims an event and updates tenant billing atomically", async () => {
+  const calls: Array<{ sql: string; values?: unknown[] }> = [];
+  const database: Queryable = { query: async (sql, values) => { calls.push({ sql, ...(values ? { values } : {}) }); return { rows: [{ event_id: "evt_1" }], rowCount: 1, command: "", oid: 0, fields: [] }; } };
+  const processed = await new PostgresBillingStore(database).reconcile({ eventId: "evt_1", eventType: "customer.subscription.updated", organizationId: "org_one", plan: "growth", status: "active", customerId: "cus_1", subscriptionId: "sub_1", priceId: "price_growth" });
+  assert.equal(processed, true);
+  assert.match(calls[0]!.sql, /ON CONFLICT DO NOTHING/);
+  assert.match(calls[0]!.sql, /WHERE EXISTS\(SELECT 1 FROM organizations WHERE id=\$3\)/);
+  assert.deepEqual(calls[0]!.values?.slice(0, 5), ["evt_1", "customer.subscription.updated", "org_one", "growth", "active"]);
 });
 
 test("design-partner reads and feedback remain organization scoped", async () => {

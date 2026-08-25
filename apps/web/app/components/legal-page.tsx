@@ -1,0 +1,3 @@
+import "../legal.css";
+export function LegalPage({title,summary,children}:{title:string;summary:string;children:React.ReactNode}){return <main className="legal-page"><nav><a href="/">SEO Autopilot</a><a href="/billing">Plans</a><a href="/legal/terms">Terms</a><a href="/legal/privacy">Privacy</a><a href="/security">Security</a></nav><header><p className="eyebrow">Effective August 25, 2026</p><h1>{title}</h1><p>{summary}</p></header><article>{children}</article><footer><span>Questions: imrangulhassan@gmail.com</span><a href="/legal/data-rights">Data requests</a><a href="/legal/subprocessors">Subprocessors</a></footer></main>}
+export function Section({title,children}:{title:string;children:React.ReactNode}){return <section><h2>{title}</h2>{children}</section>}

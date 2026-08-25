@@ -271,7 +271,7 @@ recrawl, evaluates day-28 and day-56 windows, persists observational outcomes an
 explanations, and displays completed and pending states. Calendar time and deployed
 partner changes are still required to produce real outcomes.
 
-## Milestone 21 — Billing and legal launch surface (pending)
+## Milestone 21 — Billing and legal launch surface (product complete; Stripe activation pending)
 
 - Add Stripe Starter, Growth, and Team subscriptions with explicit usage limits.
 - Add checkout, billing portal, webhook reconciliation, delinquency, and entitlement
@@ -281,6 +281,14 @@ partner changes are still required to produce real outcomes.
 
 Acceptance: billing state is authoritative and auditable, cancellation does not
 destroy evidence, and no customer can exceed paid entitlements silently.
+
+Implemented: organization-scoped Stripe Checkout and customer portal flows,
+signature-verified idempotent webhook reconciliation, durable subscription and
+usage state, enforced site limits, explicit PR entitlements, and non-destructive
+delinquency states. Terms, Privacy, Subprocessors, Security, Data Rights, and
+responsible-disclosure pages are published. Production checkout requires the
+Stripe secret key, webhook signing secret, and Starter/Growth/Team price IDs;
+legal copy should receive jurisdiction-specific counsel review before paid launch.
 
 ## Milestone 22 — Paid launch gate (pending)
 
