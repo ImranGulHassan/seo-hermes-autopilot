@@ -1,4 +1,5 @@
 .git
+.github
 .seo-autopilot
 .env*
 .vercel
