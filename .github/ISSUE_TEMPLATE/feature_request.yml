@@ -1,0 +1,33 @@
+name: Feature request
+description: Propose a focused improvement to the approval-first product
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user problem does this solve, and for whom?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed outcome
+      description: Describe the smallest useful outcome, not only an implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Trust and safety implications
+      description: Explain effects on approvals, repository writes, tenant isolation, credentials, API costs, and reversibility.
+    validations:
+      required: true
+  - type: checkboxes
+    id: boundary
+    attributes:
+      label: Product boundary
+      options:
+        - label: I reviewed README.md and IMPLEMENTATION_PLAN.md and understand that seo-autopilot.md is historical.
+          required: true

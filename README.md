@@ -4,6 +4,8 @@
 
 SEO Autopilot is the foundation of a Git-native SEO maintenance agent for content-heavy Next.js and MDX websites. It combines crawl facts and search metrics, finds high-confidence problems, prepares validator-gated draft PRs, and records what happens after deployment.
 
+This repository is open source under the [GNU Affero General Public License v3.0](LICENSE). It contains the application, workers, connectors, database layer, and Next.js/MDX adapter needed to self-host the current approval-first product. The hosted service is one deployment of the same codebase; customer credentials and customer data are never part of this repository.
+
 The v1 contract is deliberately conservative: every change requires human approval, protected paths are enforced in code, duplicate proposals are rejected, and performance reporting never claims causality from a before/after comparison.
 
 ## What works today
@@ -29,6 +31,8 @@ pnpm typecheck
 pnpm test
 pnpm build
 ```
+
+For a complete local service setup, copy `.env.example` to `.env`, keep that file private, start PostgreSQL with `docker compose up -d`, and follow [docs/self-hosting.md](docs/self-hosting.md). You can use the crawler and file-based detector workflow without configuring GitHub, Google, or PostHog.
 
 Scan a site without performance data:
 
@@ -216,15 +220,30 @@ Metric records use CTR as a decimal:
 
 ## Repository layout
 
+- `apps/web`: Next.js dashboard, authentication, onboarding, and serverless endpoints.
+- `apps/api`: tenant-scoped Hono API.
+- `apps/worker`: scheduled scan, reconciliation, and measurement jobs.
+- `apps/cli`: local crawl, analysis, orchestration, and pilot-import commands.
 - `packages/core`: crawler, normalized contracts, detectors, PR guardrails, ledger, and measurement.
-- `apps/cli`: executable vertical slice for crawling and analyzing a site.
-- `seo-autopilot.md`: original broad product brief, retained as historical context.
+- `packages/connectors`: Google Search Console, GitHub App, and PostHog clients.
+- `packages/database`: PostgreSQL schema and durable stores.
+- `packages/site-adapters`: protected Next.js/MDX discovery and deterministic patches.
+- `IMPLEMENTATION_PLAN.md`: authoritative focused-product roadmap and status.
+- `seo-autopilot.md`: original broad vision, retained as historical context rather than a promise of current features.
+
+## Contributing and security
+
+Issues and pull requests are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), follow the [Code of Conduct](CODE_OF_CONDUCT.md), and report vulnerabilities privately as described in [SECURITY.md](SECURITY.md). The current priority is correctness, tenant isolation, deterministic Next.js/MDX changes, and evidence quality—not expansion into autonomous publishing or general-purpose SEO tooling.
+
+The public-release procedure and remaining maintainer actions are tracked in [docs/open-source-release.md](docs/open-source-release.md).
 
 ## Product boundaries
 
 The launch target is an established Next.js/MDX site with 100+ indexable pages and at least 10,000 monthly organic impressions. v1 excludes autonomous content publishing, backlinks/outreach, rank tracking, GEO, WordPress, automatic performance rollback, and automatic merge. These are product decisions, not missing promises.
 
 The recommended validation sequence is three manually supported design partners, followed by five approval-only pilots. Auto-merge should remain disabled until deterministic changes have at least 20 accepted, non-regressing PRs per site; product expansion should wait until at least three pilots convert at $99/month or more.
+
+The design-partner pilot is currently free. Stripe integration is present but optional and remains disabled unless a self-hosting operator explicitly configures it.
 
 GitHub App permissions, authentication, idempotency, and webhook lifecycle are
 documented in [docs/github-app.md](docs/github-app.md).

@@ -1,0 +1,44 @@
+name: Bug report
+description: Report reproducible incorrect or unsafe behaviour
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include credentials, customer data, private repositories, or vulnerability details. Use SECURITY.md for security reports.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the observed and expected behaviour.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Provide a minimal, sanitized reproduction and relevant command output.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options: [Crawler, Detector, Repository adapter, GitHub workflow, Search Console, Dashboard/onboarding, Measurement, Authentication/tenancy, Other]
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety confirmation
+      options:
+        - label: I removed secrets, personal data, and customer-specific information.
+          required: true
+        - label: This is not a security vulnerability requiring private disclosure.
+          required: true

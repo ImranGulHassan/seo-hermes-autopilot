@@ -14,14 +14,17 @@ concurrency:
 
 jobs:
   reconcile:
+    if: ${{ vars.SEO_AUTOPILOT_RUNTIME_URL != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Trigger authenticated reconciliation
         env:
           CRON_SECRET: ${{ secrets.SEO_AUTOPILOT_CRON_SECRET }}
+          RUNTIME_URL: ${{ vars.SEO_AUTOPILOT_RUNTIME_URL }}
         run: |
           test -n "$CRON_SECRET"
+          test -n "$RUNTIME_URL"
           curl --fail-with-body --retry 2 --retry-all-errors \
             --header "Authorization: Bearer $CRON_SECRET" \
-            https://seo-autopilot-dun.vercel.app/api/cron/github-reconcile
+            "${RUNTIME_URL%/}/api/cron/github-reconcile"

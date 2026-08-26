@@ -1,6 +1,12 @@
 {
   "name": "seo-autopilot",
   "private": true,
+  "license": "AGPL-3.0-only",
+  "description": "Git-native, approval-first SEO maintenance that converts evidence-backed findings into validated pull requests.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ImranGulHassan/seo-hermes-autopilot.git"
+  },
   "packageManager": "pnpm@10.18.3",
   "engines": {
     "node": ">=20.19"
