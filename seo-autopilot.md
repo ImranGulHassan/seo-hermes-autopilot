@@ -1,5 +1,11 @@
 # SEO Autopilot — Build Spec v0.1
 
+> **Historical vision, not the current implementation contract.** This document
+> records the original broad autonomous SEO/GEO concept. The focused,
+> approval-first Next.js/MDX roadmap and its actual completion status live in
+> [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md). Contributors should not
+> interpret unimplemented items below as accepted roadmap commitments.
+
 Working name. The autonomous layer of the unified OSS SEO/GEO platform: connectors in, detectors over a warehouse, an agent that opens PRs against the site repo, and a measurement loop that grades its own changes.
 
 **Autonomy contract:** the system runs unattended and closes the loop on everything mechanical. Two categories stay human: (1) link acquisition, (2) publishing net-new content. Everything else — detection, diagnosis, patch authoring, deployment, measurement, rollback — is automated with tiered gating.

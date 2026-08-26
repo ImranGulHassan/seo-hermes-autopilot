@@ -6,6 +6,8 @@ dist/
 coverage/
 .seo-autopilot/
 .env
+.env.*
+!.env.example
 *.pem
 *.key
 *.log
